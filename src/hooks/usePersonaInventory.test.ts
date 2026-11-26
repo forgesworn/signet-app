@@ -608,3 +608,49 @@ describe('mergeInventory on a child-direct install (bound persona pinned, A26/A5
     expect(saved().primaryKeypair).toBe('natural-person');
   });
 });
+
+describe('mergeInventory carries the guardian-set backdrop onto the child\'s slots', () => {
+  const DEP_PUB = 'a'.repeat(64);
+  const PERSONA_PUB = DEP_PUB;
+  const NP_PUB = 'b'.repeat(64);
+  const EXTRA_PUB = 'c'.repeat(64);
+  const bd = (n: string) => ({ backdropHash: n.repeat(64), backdropBlossomUrl: 'https://nostr.download', backdropKey: n.repeat(64), backdropUpdatedAt: 7 });
+  const stored = {
+    id: DEP_PUB, mnemonic: '',
+    naturalPerson: { publicKey: NP_PUB, privateKey: '', displayName: '' },
+    persona: { publicKey: PERSONA_PUB, privateKey: '', displayName: 'Lily' },
+    extraPersonas: [], primaryKeypair: 'persona',
+  } as unknown as SignetIdentity;
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    mockLoadRev.mockResolvedValue(0);
+    mockSaveId.mockResolvedValue(undefined as never);
+    mockSaveRev.mockResolvedValue(undefined as never);
+  });
+
+  it('puts the four fields on NP, persona and extras', async () => {
+    mockLoadId.mockResolvedValue(stored);
+    await mergeInventory({
+      v: 1, revision: 1,
+      naturalPerson: { publicKey: NP_PUB, displayName: 'Lily', ...bd('1') },
+      persona: { publicKey: PERSONA_PUB, displayName: 'Lily', ...bd('2') },
+      extraPersonas: [{ publicKey: EXTRA_PUB, displayName: 'Gamer', ...bd('3') }],
+    }, DEP_PUB, 'k');
+    const saved = mockSaveId.mock.calls[0][0] as SignetIdentity;
+    expect(saved.naturalPerson).toMatchObject(bd('1'));
+    expect(saved.persona).toMatchObject(bd('2'));
+    expect(saved.extraPersonas![0]).toMatchObject(bd('3'));
+  });
+
+  it('a later inventory without the backdrop clears it from the slot (the guardian removed it)', async () => {
+    mockLoadId.mockResolvedValue({ ...stored, persona: { ...stored.persona, ...bd('2') } } as SignetIdentity);
+    await mergeInventory({
+      v: 1, revision: 2, persona: { publicKey: PERSONA_PUB, displayName: 'Lily' }, extraPersonas: [],
+    }, DEP_PUB, 'k');
+    const saved = mockSaveId.mock.calls[0][0] as SignetIdentity;
+    expect(saved.persona.backdropHash).toBeUndefined();
+    expect(saved.persona.backdropKey).toBeUndefined();
+    expect(saved.persona.backdropBlossomUrl).toBeUndefined();
+  });
+});

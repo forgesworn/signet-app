@@ -433,3 +433,27 @@ export const CHILD_MODE_SIGN_IN_COPY = {
   /** The connect picker in child mode when the child has no identity on this phone to connect with. */
   connectNoChildIdentity: "This phone is being used as a child right now, and it holds none of the child's identities to connect with.",
 } as const;
+
+/**
+ * Card-backdrop copy for a guardian's dependant cards and the child's own
+ * phone. The device-local line stays `BACKDROP_PRIVACY_COPY` (useCardBackdrop).
+ */
+export const BACKDROP_COPY = {
+  /** The guardian's phone, on a dependant's card: replaces the device-local line. */
+  dependantPrivacy: (name: string) =>
+    `Sent to ${name}'s phone, encrypted on the way. Not encrypted on either phone, and it shows while the app is locked.`,
+  /** The child's phone, while the guardian's picture is the one showing. */
+  fromGuardian: 'Set by your guardian',
+  /** A send that did not go: the picture is still on this phone. */
+  notSent: (name: string, reason: string, earlierOnTheirPhone: boolean) =>
+    `Not sent to ${name}'s phone. ${reason}${earlierOnTheirPhone ? ` ${name}'s phone still shows the earlier one.` : ''}`,
+  /** The picture on this phone is not the one last sent (never sent, or a replace that failed). */
+  notSentYet: (name: string) => `Not sent to ${name}'s phone yet.`,
+  reasons: {
+    locked: 'Unlock the app, then choose it again.',
+    noServer: 'Set a Blossom server in Advanced settings, then choose it again.',
+    noConsent: 'Turn on Blossom uploads in Advanced settings, then choose it again.',
+    failed: 'Check your connection and choose it again.',
+    superseded: 'A newer change to this picture replaced it.',
+  },
+} as const;

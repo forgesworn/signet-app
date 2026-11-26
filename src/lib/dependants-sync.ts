@@ -376,6 +376,14 @@ function preserveLocalSlotState<T extends {
   avatarBlossomUrl?: string;
   avatarKey?: string;
   avatarUpdatedAt?: number;
+  // Guardian-set card backdrop sent to the child's phone: a device-local
+  // pointer to the encrypted blob, never on this wire. Without it here every
+  // sync would blank the slot and the inventory would delete the child's copy.
+  backdropHash?: string;
+  backdropBlossomUrl?: string;
+  backdropKey?: string;
+  backdropUpdatedAt?: number;
+  backdropSentDigest?: string;
   // persona-card-npub-nip05 addition — device-local NIP-05 check result,
   // never carried on the wire (see personas-sync.ts toWire / persona-
   // inventory-sync.ts publicProfileToInventoryBlock, both explicit
@@ -417,6 +425,11 @@ function preserveLocalSlotState<T extends {
     avatarBlossomUrl: local.avatarBlossomUrl,
     avatarKey: local.avatarKey,
     avatarUpdatedAt: local.avatarUpdatedAt,
+    backdropHash: local.backdropHash,
+    backdropBlossomUrl: local.backdropBlossomUrl,
+    backdropKey: local.backdropKey,
+    backdropUpdatedAt: local.backdropUpdatedAt,
+    backdropSentDigest: local.backdropSentDigest,
     ...((local as { hidden?: boolean }).hidden !== undefined
       ? { hidden: (local as { hidden?: boolean }).hidden }
       : {}),

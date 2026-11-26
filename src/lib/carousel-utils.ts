@@ -115,7 +115,7 @@ export function buildRows(
  */
 export function dependantDisplayView(dep: DependantIdentity): DependantIdentity {
   const bare = <T extends { privateKey: string }>(slot: T): T => ({
-    ...slot, privateKey: '', avatarKey: undefined, contactAvatarKey: undefined,
+    ...slot, privateKey: '', avatarKey: undefined, contactAvatarKey: undefined, backdropKey: undefined,
   });
   const { bunkerEndpoint: _b, appBunkerEndpoint: _a, ...rest } = dep;
   void _b; void _a;

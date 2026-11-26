@@ -132,6 +132,21 @@ export function usePersonaInventory({ relayUrl, encryptionKey, dependantPubkey, 
 }
 
 /**
+ * The guardian-set backdrop pointer a wire entry carries, as the four slot
+ * fields. Always all four keys, so a wire entry without a backdrop CLEARS a
+ * stored one (wire-wins, like the avatar): the guardian removing it must reach
+ * the child, and `useGuardianBackdrops` then drops the downloaded copy.
+ */
+function backdropOf(entry: { backdropHash?: string; backdropBlossomUrl?: string; backdropKey?: string; backdropUpdatedAt?: number } | undefined) {
+  return {
+    backdropHash: entry?.backdropHash,
+    backdropBlossomUrl: entry?.backdropBlossomUrl,
+    backdropKey: entry?.backdropKey,
+    backdropUpdatedAt: entry?.backdropUpdatedAt,
+  };
+}
+
+/**
  * Apply a decrypted inventory payload to the stored SignetIdentity:
  * merge persona + extras (public keys + display names), drop stale
  * revisions, and fall back to NP if the active persona disappeared.
@@ -203,6 +218,7 @@ export async function mergeInventory(
       avatarBlossomUrl: ep.avatarBlossomUrl,
       avatarKey: ep.avatarKey,
       avatarUpdatedAt: ep.avatarUpdatedAt,
+      ...backdropOf(ep),
       ...(cfg ?? {}),
       publicProfile: st,
     };
@@ -273,6 +289,7 @@ export async function mergeInventory(
           avatarBlossomUrl: wireNaturalPerson.avatarBlossomUrl,
           avatarKey: wireNaturalPerson.avatarKey,
           avatarUpdatedAt: wireNaturalPerson.avatarUpdatedAt,
+          ...backdropOf(wireNaturalPerson),
           ...applyConfigWithWipes(
             wireNaturalPerson.publicProfile !== undefined,
             npMerge.config,
@@ -297,6 +314,7 @@ export async function mergeInventory(
       avatarBlossomUrl: wirePersona?.avatarBlossomUrl,
       avatarKey: wirePersona?.avatarKey,
       avatarUpdatedAt: wirePersona?.avatarUpdatedAt,
+      ...backdropOf(wirePersona),
       ...applyConfigWithWipes(
         wirePersona?.publicProfile !== undefined,
         personaMerge.config,

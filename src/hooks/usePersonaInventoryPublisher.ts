@@ -106,6 +106,19 @@ function publicProfileHashFragment(
   });
 }
 
+type BackdropSlot = { backdropHash?: string; backdropBlossomUrl?: string; backdropKey?: string; backdropUpdatedAt?: number };
+
+/**
+ * A backdrop's identity for change detection: hash AND key AND server, for the
+ * same reason as the avatar. A re-pick of identical bytes keeps the hash but
+ * not the key, and the child would be left holding a key that no longer opens
+ * the blob.
+ */
+function backdropHashFragment(slot: BackdropSlot): string {
+  if (!slot.backdropHash || !slot.backdropKey) return '';
+  return `${slot.backdropHash}|${slot.backdropKey}|${slot.backdropBlossomUrl ?? ''}`;
+}
+
 function inventoryHashFor(dep: DependantIdentity): string {
   return JSON.stringify({
     id: dep.id,
@@ -113,6 +126,7 @@ function inventoryHashFor(dep: DependantIdentity): string {
     npActive: isDependantNaturalPersonActive(dep),
     npAvatar: dep.naturalPerson.avatarHash ?? '',
     npAvatarKey: dep.naturalPerson.avatarKey ?? '',
+    npBackdrop: backdropHashFragment(dep.naturalPerson),
     npProfile: publicProfileHashFragment(
       extractConfigFromSlot(dep.naturalPerson),
       dep.naturalPerson.publicProfile?.enabled ?? false,
@@ -121,6 +135,7 @@ function inventoryHashFor(dep: DependantIdentity): string {
     personaName: dep.persona.displayName,
     personaAvatar: dep.persona.avatarHash ?? '',
     personaAvatarKey: dep.persona.avatarKey ?? '',
+    personaBackdrop: backdropHashFragment(dep.persona),
     personaProfile: publicProfileHashFragment(
       extractConfigFromSlot(dep.persona),
       dep.persona.publicProfile?.enabled ?? false,
@@ -131,6 +146,7 @@ function inventoryHashFor(dep: DependantIdentity): string {
       h: ep.hidden,
       a: ep.avatarHash ?? '',
       ak: ep.avatarKey ?? '',
+      b: backdropHashFragment(ep),
       pp: publicProfileHashFragment(
         extractConfigFromSlot(ep),
         ep.publicProfile?.enabled ?? false,
@@ -157,6 +173,17 @@ function avatarPayloadFor(
     avatarBlossomUrl: slot.avatarBlossomUrl,
     avatarKey: slot.avatarKey,
     avatarUpdatedAt: slot.avatarUpdatedAt,
+  };
+}
+
+/** The backdrop twin of `avatarPayloadFor`. The wire builder validates the shape again. */
+function backdropPayloadFor(slot: BackdropSlot): Partial<{ backdropHash: string; backdropBlossomUrl: string; backdropKey: string; backdropUpdatedAt: number }> {
+  if (!slot.backdropHash || !slot.backdropBlossomUrl || !slot.backdropKey) return {};
+  return {
+    backdropHash: slot.backdropHash,
+    backdropBlossomUrl: slot.backdropBlossomUrl,
+    backdropKey: slot.backdropKey,
+    backdropUpdatedAt: slot.backdropUpdatedAt,
   };
 }
 
@@ -211,6 +238,7 @@ export function usePersonaInventoryPublisher({ dependants, relayUrl, encryptionK
               publicKey: dep.persona.publicKey,
               displayName: dep.persona.displayName,
               ...avatarPayloadFor(dep.persona),
+              ...backdropPayloadFor(dep.persona),
               ...(personaProfile ? { publicProfile: personaProfile } : {}),
             }
           : undefined;
@@ -226,6 +254,7 @@ export function usePersonaInventoryPublisher({ dependants, relayUrl, encryptionK
               publicKey: ep.publicKey,
               displayName: ep.displayName,
               ...avatarPayloadFor(ep),
+              ...backdropPayloadFor(ep),
               ...(epProfile ? { publicProfile: epProfile } : {}),
             };
           });
@@ -247,6 +276,7 @@ export function usePersonaInventoryPublisher({ dependants, relayUrl, encryptionK
                     publicKey: dep.naturalPerson.publicKey,
                     displayName: dep.naturalPerson.displayName,
                     ...avatarPayloadFor(dep.naturalPerson),
+                    ...backdropPayloadFor(dep.naturalPerson),
                     ...(npProfile ? { publicProfile: npProfile } : {}),
                   }
                 : undefined,

@@ -3,10 +3,10 @@ import { sha256 } from '@noble/hashes/sha2.js';
 import { bytesToHex } from '@noble/hashes/utils.js';
 import {
   collectReferencedHashes, isBlobReferenced, deleteOwnedBlob, blobDeletionNote, serverFromBlobUrl, findSlotBlobs,
-  deleteReplacedAvatar, deleteStoppedShareCopy, type BlobDeleter, type DeleteOutcome,
+  deleteReplacedAvatar, deleteReplacedBackdrop, deleteStoppedShareCopy, type BlobDeleter, type DeleteOutcome,
 } from './blob-deletion';
 import {
-  AVATAR_UPLOADER_DOMAIN, CONTACT_AVATAR_UPLOADER_DOMAIN, PUBLIC_PICTURE_UPLOADER_DOMAIN, VENUE_PHOTO_UPLOADER_DOMAIN,
+  AVATAR_UPLOADER_DOMAIN, BACKDROP_UPLOADER_DOMAIN, CONTACT_AVATAR_UPLOADER_DOMAIN, PUBLIC_PICTURE_UPLOADER_DOMAIN, VENUE_PHOTO_UPLOADER_DOMAIN,
   hmacUploaderBackend,
 } from './blossom-uploader';
 import { uploadContactAvatar } from './avatar';
@@ -316,5 +316,53 @@ describe('R1 against the real stored rows (no test seam)', () => {
     // Something the identity does not name is deletable.
     expect(await deleteOwnedBlob({ hash: H3, server: SERVER, domain: VENUE_PHOTO_UPLOADER_DOMAIN, encryptionKey: KEY, fetchImpl })).toBe('deleted');
     await purgeAllUserData();
+  }, 30_000);
+});
+
+describe('the guardian-set card backdrop', () => {
+  it('a backdrop hash on a stored slot is referenced (R1), so it is never deleted from under the child', () => {
+    const rows = [row({ persona: { publicKey: 'p'.repeat(64), backdropHash: H1 } })];
+    expect(isBlobReferenced(H1, rows)).toBe(true);
+    expect(isBlobReferenced(H2, rows)).toBe(false);
+  });
+
+  it('findSlotBlobs reports the backdrop pair beside the avatar', () => {
+    const holder = { persona: { backdropHash: H1, backdropBlossomUrl: 'https://a.example', avatarHash: H2, avatarBlossomUrl: 'https://b.example' } };
+    expect(findSlotBlobs(holder, 'persona')).toMatchObject({
+      backdrop: { hash: H1, server: 'https://a.example' }, avatar: { hash: H2, server: 'https://b.example' },
+    });
+    expect(findSlotBlobs({ persona: {} }, 'persona').backdrop).toBeUndefined();
+  });
+
+  it('deleteReplacedBackdrop deletes under the backdrop domain, never the avatar one', async () => {
+    const calls: unknown[][] = [];
+    const del: BlobDeleter = async (...a) => { calls.push(a); return 'deleted'; };
+    expect(await deleteReplacedBackdrop({ hash: H1, server: SERVER }, H2, del)).toBe('deleted');
+    expect(await deleteReplacedBackdrop({ hash: H1, server: SERVER }, undefined, del)).toBe('deleted');
+    expect(calls).toEqual([[BACKDROP_UPLOADER_DOMAIN, H1, SERVER], [BACKDROP_UPLOADER_DOMAIN, H1, SERVER]]);
+    expect(BACKDROP_UPLOADER_DOMAIN).not.toBe(AVATAR_UPLOADER_DOMAIN);
+  });
+
+  it('deletes nothing when nothing was there or the same bytes were picked again', async () => {
+    const calls: unknown[][] = [];
+    const del: BlobDeleter = async (...a) => { calls.push(a); return 'deleted'; };
+    expect(await deleteReplacedBackdrop(undefined, H2, del)).toBeUndefined();
+    expect(await deleteReplacedBackdrop({ hash: H1, server: SERVER }, H1, del)).toBeUndefined();
+    expect(calls).toHaveLength(0);
+  });
+
+  it('really signs a backdrop delete with the backdrop-domain uploader', async () => {
+    const seen: Array<{ pubkey: string; tags: string[][] }> = [];
+    vi.stubGlobal('fetch', vi.fn(async (_u: string, init: RequestInit) => {
+      seen.push(JSON.parse(atob((init.headers as Record<string, string>).Authorization.replace(/^Nostr /, ''))));
+      return new Response('', { status: 200 });
+    }));
+    try {
+      const out = await deleteOwnedBlob({ hash: H1, server: SERVER, domain: BACKDROP_UPLOADER_DOMAIN, encryptionKey: KEY, loadRows: async () => [] });
+      expect(out).toBe('deleted');
+      const rebuilt = await hmacUploaderBackend(BACKDROP_UPLOADER_DOMAIN, H1, KEY);
+      expect(seen[0].pubkey).toBe(rebuilt.activePublicKeyHex);
+      rebuilt.destroy();
+    } finally { vi.unstubAllGlobals(); }
   }, 30_000);
 });

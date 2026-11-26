@@ -540,6 +540,36 @@ describe('mergeDependantWithLocal', () => {
     expect(merged.extraPersonas![0].avatarHash).toBe('cc'.repeat(32));
   });
 
+  it('preserves device-local backdrop fields on every slot, and never puts them on the wire', () => {
+    // Guardian-set card backdrops (sent to the child's phone) are device-local
+    // pointers: the wire omits them, so a sync merge that did not keep them
+    // would blank the slot, and the publisher would then delete the child's copy.
+    const sharedExtraKey = '9'.repeat(64);
+    const bd = (n: string) => ({
+      backdropHash: n.repeat(64), backdropBlossomUrl: `https://blossom.example/${n}`, backdropKey: n.repeat(64), backdropUpdatedAt: 77, backdropSentDigest: n.repeat(64),
+    });
+    const local = makeDerivedDep({
+      naturalPerson: { publicKey: DEP0_NP_PUB, privateKey: 'a'.repeat(64), displayName: 'Child', ...bd('1') },
+      persona: { publicKey: DEP0_PERSONA_PUB, privateKey: 'b'.repeat(64), displayName: 'Anon', ...bd('2') },
+      extraPersonas: [{ publicKey: sharedExtraKey, privateKey: 'e'.repeat(64), displayName: 'Gamer', derivationName: 'dependant-0-persona-1', ...bd('3') }],
+    });
+    const wire = toSyncWire(local)!;
+    expect(JSON.stringify(wire)).not.toMatch(/backdrop/);
+    const remote = makeDerivedDep({
+      naturalPerson: { publicKey: DEP0_NP_PUB, privateKey: 'a'.repeat(64), displayName: 'Child' },
+      persona: { publicKey: DEP0_PERSONA_PUB, privateKey: 'b'.repeat(64), displayName: 'Anon' },
+      extraPersonas: [{ publicKey: sharedExtraKey, privateKey: 'e'.repeat(64), displayName: 'Gamer', derivationName: 'dependant-0-persona-1' }],
+    });
+    const merged = mergeDependantWithLocal(remote, local);
+    for (const [slot, n] of [[merged.naturalPerson, '1'], [merged.persona, '2'], [merged.extraPersonas![0], '3']] as const) {
+      expect(slot.backdropHash).toBe(n.repeat(64));
+      expect(slot.backdropBlossomUrl).toBe(`https://blossom.example/${n}`);
+      expect(slot.backdropKey).toBe(n.repeat(64));
+      expect(slot.backdropUpdatedAt).toBe(77);
+      expect(slot.backdropSentDigest).toBe(n.repeat(64));
+    }
+  });
+
   it('preserves local nip05CheckResult/nip05CheckedAt across sync (device-local, never synced)', () => {
     const sharedExtraKey = '8'.repeat(64);
     const local = makeDerivedDep({

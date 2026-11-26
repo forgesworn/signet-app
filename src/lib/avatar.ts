@@ -267,6 +267,8 @@ export async function fetchAvatar(meta: {
    * redirects (blossom.primal.net answers GETs with a 302 to its media host).
    */
   contactControlled?: boolean;
+  /** Download cap in bytes. Defaults to `AVATAR_MAX_DOWNLOAD_BYTES`; card backdrops are larger pictures and pass their own. */
+  maxBytes?: number;
 }): Promise<Blob> {
   const baseUrl = meta.blossomUrl.replace(/\/+$/, '');
   // SSRF / IP-leak guard (security audit 2026-06-15): reject non-https or
@@ -285,7 +287,7 @@ export async function fetchAvatar(meta: {
   }
   // Bound the buffered body so a hostile server can't exhaust memory before
   // the hash check runs.
-  const buf = await readBodyCapped(response, AVATAR_MAX_DOWNLOAD_BYTES);
+  const buf = await readBodyCapped(response, meta.maxBytes ?? AVATAR_MAX_DOWNLOAD_BYTES);
   const localHash = bytesToHex(sha256(buf));
   if (localHash.toLowerCase() !== meta.hash.toLowerCase()) {
     throw new Error('Avatar hash mismatch — server returned different bytes than expected');

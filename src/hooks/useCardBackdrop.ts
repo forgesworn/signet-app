@@ -1,5 +1,9 @@
-import { useCallback, useEffect, useState } from 'react';
-import { getCardBackdrop, setCardBackdrop, deleteCardBackdrop } from '../lib/db';
+import { useCallback, useContext, useEffect, useRef, useState } from 'react';
+import {
+  getCardBackdrop, setCardBackdrop, deleteCardBackdrop, getGuardianBackdrop, deleteGuardianBackdrop,
+} from '../lib/db';
+import { backdropDigest } from '../lib/backdrop-digest';
+import { DependantBackdropContext, type BackdropSendResult, type DependantBackdropLink } from '../lib/backdrop-send-context';
 
 /** Largest source file we will try to decode. Anything a phone camera makes fits. */
 export const MAX_BACKDROP_SOURCE_BYTES = 40 * 1024 * 1024;
@@ -9,49 +13,82 @@ const BACKDROP_JPEG_QUALITY = 0.85;
 /** Backdrops are stored in clear and painted on the locked card, so say so where one is picked. */
 export const BACKDROP_PRIVACY_COPY = 'Only on this device. Not encrypted, and it shows while the app is locked.';
 
-export type BackdropSetResult = { ok: true } | { ok: false; reason: string };
+/**
+ * `send` is present only on a guardian's dependant card: how the copy for the
+ * child's phone went. A failed send leaves the local picture in place.
+ */
+export type BackdropSetResult = { ok: true; send?: BackdropSendResult } | { ok: false; reason: string };
+
+/** Whose picture is showing: this device's own pick, or the one a guardian sent (child's phone only). */
+export type BackdropSource = 'own' | 'guardian';
+
+interface Resolved { url: string | null; source: BackdropSource | null }
+const NONE: Resolved = { url: null, source: null };
 
 // One object URL per identity for the life of the page. Every card of that
 // identity (both carousel screens mid-swipe, the settings row, the edit
 // control) reads the same URL, so a freshly mounted card paints its backdrop
 // on the first frame instead of after an IndexedDB round trip.
-const urls = new Map<string, string | null>();
-const loads = new Map<string, Promise<string | null>>();
+//
+// Two rows can feed it: the device's own `backdrop:<pubkey>` pick, which always
+// wins, and `backdrop-guardian:<pubkey>`, the picture a guardian sent to a
+// paired child. The cache holds whichever one resolves.
+const resolved = new Map<string, Resolved>();
+const loads = new Map<string, Promise<Resolved>>();
 const listeners = new Set<(pubkey: string) => void>();
 
 function notify(pubkey: string): void {
   for (const listener of listeners) listener(pubkey);
 }
 
-function load(pubkey: string): Promise<string | null> {
-  const cached = urls.get(pubkey);
+async function readRows(pubkey: string): Promise<Resolved> {
+  try {
+    const own = await getCardBackdrop(pubkey);
+    if (own) return { url: URL.createObjectURL(own), source: 'own' };
+  } catch { /* fall through to the guardian's copy */ }
+  try {
+    const guardian = await getGuardianBackdrop(pubkey);
+    if (guardian) return { url: URL.createObjectURL(guardian.blob), source: 'guardian' };
+  } catch { /* none */ }
+  return NONE;
+}
+
+function load(pubkey: string): Promise<Resolved> {
+  const cached = resolved.get(pubkey);
   if (cached !== undefined) return Promise.resolve(cached);
   const running = loads.get(pubkey);
   if (running) return running;
-  const promise = getCardBackdrop(pubkey)
-    .then(blob => (blob ? URL.createObjectURL(blob) : null))
-    .catch(() => null)
-    .then(url => {
+  const promise = readRows(pubkey)
+    .then(entry => {
       // A write that landed while this read was in flight wins.
-      if (!urls.has(pubkey)) urls.set(pubkey, url);
-      else if (url) URL.revokeObjectURL(url);
-      return urls.get(pubkey) ?? null;
+      if (!resolved.has(pubkey)) resolved.set(pubkey, entry);
+      else if (entry.url) URL.revokeObjectURL(entry.url);
+      return resolved.get(pubkey) ?? NONE;
     })
     .finally(() => { loads.delete(pubkey); });
   loads.set(pubkey, promise);
   return promise;
 }
 
-function remember(pubkey: string, url: string | null): void {
-  const previous = urls.get(pubkey);
-  if (previous && previous !== url) URL.revokeObjectURL(previous);
-  urls.set(pubkey, url);
+function remember(pubkey: string, entry: Resolved): void {
+  const previous = resolved.get(pubkey);
+  if (previous?.url && previous.url !== entry.url) URL.revokeObjectURL(previous.url);
+  resolved.set(pubkey, entry);
   notify(pubkey);
+}
+
+/**
+ * Re-read both rows for an identity and repaint every card of it. Called after
+ * anything that changes which row should show: the child's fetch of the
+ * guardian's picture landing or being dropped, and the child removing its own.
+ */
+export async function refreshCardBackdrop(pubkey: string): Promise<void> {
+  remember(pubkey, await readRows(pubkey));
 }
 
 /** Synchronous read of the cached backdrop URL (null when none, undefined when not loaded yet). */
 export function peekCardBackdropUrl(pubkey: string): string | null | undefined {
-  return urls.get(pubkey);
+  return resolved.get(pubkey)?.url;
 }
 
 /**
@@ -81,10 +118,11 @@ export async function downscaleBackdrop(file: Blob): Promise<Blob> {
 }
 
 /**
- * Drop an identity's backdrop for good: delete the stored row and release the
- * cached object URL so every mounted card repaints without it. Best-effort and
- * never throws, so it can sit inside a persona or dependant delete path
- * without being able to block it. A null cache entry means "no backdrop".
+ * Drop an identity's backdrop for good: delete BOTH stored rows (its own pick
+ * and any guardian-sent copy) and release the cached object URL so every
+ * mounted card repaints without it. Best-effort and never throws, so it can sit
+ * inside a persona or dependant delete path without being able to block it. A
+ * null cache entry means "no backdrop".
  */
 export async function forgetCardBackdrop(pubkey: string): Promise<void> {
   try {
@@ -92,38 +130,112 @@ export async function forgetCardBackdrop(pubkey: string): Promise<void> {
   } catch {
     // Best-effort: an orphan row is harmless and invisible.
   }
-  remember(pubkey, null);
+  try {
+    await deleteGuardianBackdrop(pubkey);
+  } catch {
+    // Same: best-effort.
+  }
+  remember(pubkey, NONE);
 }
 
 /** Test seam: forget every cached URL. */
 export function resetCardBackdropCacheForTests(): void {
-  urls.clear();
+  resolved.clear();
   loads.clear();
 }
 
 /**
- * Device-local card backdrop for one identity — the card's "wallpaper".
- * Keyed by the identity's pubkey so every persona (and the real identity)
- * can carry its own. Not synced: like a phone wallpaper, it belongs to
- * this install. `url` is null while loading or when none is set.
+ * Card backdrop for one identity — the card's "wallpaper". Keyed by the
+ * identity's pubkey so every persona (and the real identity) can carry its
+ * own. The device's own pick is local to this install, like a phone wallpaper.
+ * On a guardian's phone, a dependant's backdrop is also sent, encrypted, to the
+ * child's phone (`send` on the result; see `DependantBackdropContext`). On a
+ * child's phone a picture the guardian sent shows when the child has not picked
+ * their own (`source: 'guardian'`). `url` is null while loading or when none is set.
  */
 export function useCardBackdrop(pubkey: string | undefined): {
   url: string | null;
+  source: BackdropSource | null;
+  /** The dependant link on a guardian's dependant card whose slot is sent to the child; null everywhere else. */
+  link: DependantBackdropLink | null;
+  /**
+   * True on a dependant card while the unlock key is gone: Remove cannot clear
+   * the pointer sent to the child, so it is not offered (and `clear` refuses).
+   */
+  removeBlocked: boolean;
+  /**
+   * True on a linked dependant card when the picture stored on this phone is not
+   * the one last sent to the child's phone (never sent, or a replace that
+   * failed). Derived from the digest saved on the slot, so it survives remounts.
+   */
+  unsent: boolean;
+  /** Send the stored local picture to the child's phone again. */
+  retrySend: () => Promise<BackdropSendResult>;
   set: (file: File) => Promise<BackdropSetResult>;
   clear: () => Promise<void>;
 } {
-  const [url, setUrl] = useState<string | null>(() => (pubkey ? urls.get(pubkey) ?? null : null));
+  const [entry, setEntry] = useState<Resolved>(() => (pubkey ? resolved.get(pubkey) ?? NONE : NONE));
+  const lookup = useContext(DependantBackdropContext);
+  // Every dependant slot has a link, so Remove can clear a pointer; only a
+  // slot the publisher sends is "linked" as far as the card's copy goes.
+  const slotLink = pubkey && lookup ? lookup(pubkey) : null;
+  const link = slotLink?.canSend ? slotLink : null;
+  const removeBlocked = !!slotLink && !slotLink.unlocked;
 
   useEffect(() => {
-    if (!pubkey) { setUrl(null); return; }
+    if (!pubkey) { setEntry(NONE); return; }
     let live = true;
-    const sync = () => { if (live) setUrl(urls.get(pubkey) ?? null); };
+    const sync = () => { if (live) setEntry(resolved.get(pubkey) ?? NONE); };
     const listener = (changed: string) => { if (changed === pubkey) sync(); };
     listeners.add(listener);
     sync();
-    if (!urls.has(pubkey)) void load(pubkey).then(sync);
+    if (!resolved.has(pubkey)) void load(pubkey).then(sync);
     return () => { live = false; listeners.delete(listener); };
   }, [pubkey]);
+
+  // Which local picture is on this phone, by digest, once a linked dependant
+  // card shows the device's own pick. Compared with the digest the slot recorded
+  // when it last sent, so "not sent" is a fact about stored state, not a memory
+  // of the last attempt.
+  const [localDigest, setLocalDigest] = useState<string | null>(null);
+  const [sending, setSending] = useState(false);
+  const linked = !!link;
+  useEffect(() => {
+    if (!pubkey || !linked || entry.source !== 'own') { setLocalDigest(null); return; }
+    let live = true;
+    void (async () => {
+      try {
+        const row = await getCardBackdrop(pubkey);
+        const digest = row ? await backdropDigest(row) : null;
+        if (live) setLocalDigest(digest);
+      } catch {
+        if (live) setLocalDigest(null);
+      }
+    })();
+    return () => { live = false; };
+  }, [pubkey, linked, entry.source, entry.url]);
+  const unsent = linked && !sending && localDigest !== null
+    && !(link.sent && link.sentDigest === localDigest);
+
+  const sendCount = useRef(0);
+  const sendTracked = useCallback(async (stored: Blob, target: DependantBackdropLink): Promise<BackdropSendResult> => {
+    sendCount.current += 1;
+    setSending(true);
+    try {
+      return await target.send(stored);
+    } finally {
+      sendCount.current -= 1;
+      if (sendCount.current === 0) setSending(false);
+    }
+  }, []);
+
+  const retrySend = useCallback(async (): Promise<BackdropSendResult> => {
+    if (!pubkey || !link) return { ok: false, reason: 'Nothing to send.' };
+    let stored: Blob | null = null;
+    try { stored = await getCardBackdrop(pubkey); } catch { /* none */ }
+    if (!stored) return { ok: false, reason: 'Nothing to send.' };
+    return sendTracked(stored, link);
+  }, [pubkey, link, sendTracked]);
 
   const set = useCallback(async (file: File): Promise<BackdropSetResult> => {
     if (!pubkey) return { ok: false, reason: 'No identity selected.' };
@@ -140,15 +252,27 @@ export function useCardBackdrop(pubkey: string | undefined): {
     } catch {
       return { ok: false, reason: 'Could not save the backdrop. Try again.' };
     }
-    remember(pubkey, URL.createObjectURL(stored));
-    return { ok: true };
-  }, [pubkey]);
+    remember(pubkey, { url: URL.createObjectURL(stored), source: 'own' });
+    // Saved locally first, exactly as always. A guardian's dependant card then
+    // also sends it to the child; a failed send never undoes the local pick.
+    if (!link) return { ok: true };
+    return { ok: true, send: await sendTracked(stored, link) };
+  }, [pubkey, link, sendTracked]);
 
   const clear = useCallback(async () => {
     if (!pubkey) return;
+    // Locked: the pointer on the dependant's slot cannot be cleared, and
+    // dropping only the local copy would leave it behind.
+    if (slotLink && !slotLink.unlocked) return;
+    // Started first (its ordering step runs synchronously), so a send still
+    // uploading is outranked before the local picture goes.
+    const removal = slotLink ? slotLink.remove() : undefined;
     await deleteCardBackdrop(pubkey);
-    remember(pubkey, null);
-  }, [pubkey]);
+    // Re-resolve rather than blank: on a child's phone the guardian's picture
+    // takes over again once the child's own is gone.
+    await refreshCardBackdrop(pubkey);
+    await removal;
+  }, [pubkey, slotLink]);
 
-  return { url, set, clear };
+  return { url: entry.url, source: entry.source, link, removeBlocked, unsent, retrySend, set, clear };
 }

@@ -149,6 +149,16 @@ export interface PersonaInventoryEntry {
   avatarKey?: string;
   avatarUpdatedAt?: number;
   /**
+   * Optional guardian-set card backdrop for this persona, same shape and the
+   * same NIP-44 envelope as the avatar. All four move together; absence means
+   * "the guardian has set none". An older child build ignores the four unknown
+   * fields (pinned by a test), so a mixed-version family is safe.
+   */
+  backdropHash?: string;
+  backdropBlossomUrl?: string;
+  backdropKey?: string;
+  backdropUpdatedAt?: number;
+  /**
    * Optional public Nostr profile (kind-0) policy block. Config fields only.
    * See `PersonaInventoryPublicProfileBlock` for the no-state-fields rationale.
    */
@@ -236,6 +246,7 @@ export async function publishPersonaInventory(
       publicKey: ep.publicKey.toLowerCase(),
       displayName: ep.displayName,
       ...avatarFieldsFor(ep),
+      ...backdropFieldsFor(ep),
       ...publicProfileFieldsFor(ep),
     })),
   };
@@ -244,6 +255,7 @@ export async function publishPersonaInventory(
       publicKey: params.naturalPerson.publicKey.toLowerCase(),
       displayName: params.naturalPerson.displayName,
       ...avatarFieldsFor(params.naturalPerson),
+      ...backdropFieldsFor(params.naturalPerson),
       ...publicProfileFieldsFor(params.naturalPerson),
     };
   }
@@ -252,6 +264,7 @@ export async function publishPersonaInventory(
       publicKey: params.persona.publicKey.toLowerCase(),
       displayName: params.persona.displayName,
       ...avatarFieldsFor(params.persona),
+      ...backdropFieldsFor(params.persona),
       ...publicProfileFieldsFor(params.persona),
     };
   }
@@ -293,6 +306,25 @@ function avatarFieldsFor(
     avatarBlossomUrl,
     avatarKey: avatarKey.toLowerCase(),
     avatarUpdatedAt,
+  };
+}
+
+type BackdropWireFields = Partial<Pick<PersonaInventoryEntry, 'backdropHash' | 'backdropBlossomUrl' | 'backdropKey' | 'backdropUpdatedAt'>>;
+
+/**
+ * The backdrop twin of `avatarFieldsFor`: all-or-nothing, hash and key must be
+ * 64-char hex, so a partial or malformed guardian record never produces a
+ * partial wire entry.
+ */
+function backdropFieldsFor(slot: BackdropWireFields): BackdropWireFields {
+  const { backdropHash, backdropBlossomUrl, backdropKey, backdropUpdatedAt } = slot;
+  if (!backdropHash || !backdropBlossomUrl || !backdropKey) return {};
+  if (!HEX64.test(backdropHash) || !HEX64.test(backdropKey)) return {};
+  return {
+    backdropHash: backdropHash.toLowerCase(),
+    backdropBlossomUrl,
+    backdropKey: backdropKey.toLowerCase(),
+    backdropUpdatedAt,
   };
 }
 
@@ -404,6 +436,7 @@ export function parsePersonaInventoryPayload(raw: string): PersonaInventoryPaylo
       publicKey: npRec.publicKey.toLowerCase(),
       displayName: sanitiseDisplayName(npRec.displayName),
       ...readOptionalAvatar(npRec),
+      ...readOptionalBackdrop(npRec),
       ...readOptionalPublicProfile(npRec),
     };
   }
@@ -419,6 +452,7 @@ export function parsePersonaInventoryPayload(raw: string): PersonaInventoryPaylo
       publicKey: er.publicKey.toLowerCase(),
       displayName: sanitiseDisplayName(er.displayName),
       ...readOptionalAvatar(er),
+      ...readOptionalBackdrop(er),
       ...readOptionalPublicProfile(er),
     });
   }
@@ -439,6 +473,7 @@ export function parsePersonaInventoryPayload(raw: string): PersonaInventoryPaylo
       publicKey: per.publicKey.toLowerCase(),
       displayName: sanitiseDisplayName(per.displayName),
       ...readOptionalAvatar(per),
+      ...readOptionalBackdrop(per),
       ...readOptionalPublicProfile(per),
     };
   }
@@ -473,6 +508,27 @@ function readOptionalAvatar(rec: Record<string, unknown>): Partial<Pick<PersonaI
     avatarBlossomUrl: url,
     avatarKey: keyHex.toLowerCase(),
     avatarUpdatedAt: typeof updatedAt === 'number' && updatedAt > 0 ? updatedAt : undefined,
+  };
+}
+
+/**
+ * The backdrop twin of `readOptionalAvatar`, equally defensive and
+ * all-or-nothing: anything malformed reads as "no backdrop", never as a
+ * rejected inventory. The Blossom URL is validated at fetch time, not here.
+ */
+function readOptionalBackdrop(rec: Record<string, unknown>): BackdropWireFields {
+  const hash = rec.backdropHash;
+  const url = rec.backdropBlossomUrl;
+  const keyHex = rec.backdropKey;
+  const updatedAt = rec.backdropUpdatedAt;
+  if (typeof hash !== 'string' || !HEX64.test(hash)) return {};
+  if (typeof url !== 'string' || url.length === 0) return {};
+  if (typeof keyHex !== 'string' || !HEX64.test(keyHex)) return {};
+  return {
+    backdropHash: hash.toLowerCase(),
+    backdropBlossomUrl: url,
+    backdropKey: keyHex.toLowerCase(),
+    backdropUpdatedAt: typeof updatedAt === 'number' && updatedAt > 0 ? updatedAt : undefined,
   };
 }
 

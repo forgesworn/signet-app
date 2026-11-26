@@ -8,7 +8,8 @@ import { encodeNpub, hexToBytes, isValidHexKey } from '../lib/signet';
 import { computeAge } from '../lib/date-utils';
 import { initialFromName, colourFromPubkey } from '../lib/avatar';
 import { useResolvedAvatar } from '../hooks/useResolvedAvatar';
-import { BACKDROP_PRIVACY_COPY, useCardBackdrop } from '../hooks/useCardBackdrop';
+import { BACKDROP_PRIVACY_COPY, useCardBackdrop, type BackdropSetResult } from '../hooks/useCardBackdrop';
+import { BACKDROP_COPY } from '../lib/child-device-copy';
 import { safeImageOrLinkUrl } from '../lib/public-profile-publish';
 import { BrandMark } from './BrandMark';
 import { KnownPlacesStrip } from './KnownPlacesStrip';
@@ -122,6 +123,14 @@ export interface IdentityCardProps {
 }
 
 const BACKDROP_NOTE_MS = 4000;
+
+/** The line shown after a pick: the privacy line that fits where the picture goes, or why it did not go. */
+function backdropSetNote(result: BackdropSetResult, link: { name: string; sent: boolean } | null): string {
+  if (!result.ok) return result.reason;
+  if (!link) return BACKDROP_PRIVACY_COPY;
+  if (result.send && !result.send.ok) return BACKDROP_COPY.notSent(link.name, result.send.reason, link.sent);
+  return BACKDROP_COPY.dependantPrivacy(link.name);
+}
 
 const CHILD_NOTICE_STYLE: CSSProperties = {
   padding: '12px 14px',
@@ -330,7 +339,7 @@ export function IdentityCard({ onHandshake, row, resolved, childMode, foreign = 
               e.target.value = '';
               setBackdropMenuOpen(false);
               if (!file) return;
-              void backdrop.set(file).then(result => { showBackdropNote(result.ok ? BACKDROP_PRIVACY_COPY : result.reason); });
+              void backdrop.set(file).then(result => { showBackdropNote(backdropSetNote(result, backdrop.link)); });
             }}
           />
           <button
@@ -351,9 +360,26 @@ export function IdentityCard({ onHandshake, row, resolved, childMode, foreign = 
               <button type="button" role="menuitem" onClick={() => { setBackdropMenuOpen(false); openBackdropPicker(); }}>
                 Change image
               </button>
-              <button type="button" role="menuitem" onClick={() => { setBackdropMenuOpen(false); void backdrop.clear(); }}>
-                Remove
-              </button>
+              {backdrop.link && backdrop.unsent && (
+                <button type="button" role="menuitem" onClick={() => {
+                  setBackdropMenuOpen(false);
+                  const link = backdrop.link;
+                  if (!link) return;
+                  void backdrop.retrySend().then(result => {
+                    showBackdropNote(result.ok
+                      ? BACKDROP_COPY.dependantPrivacy(link.name)
+                      : BACKDROP_COPY.notSent(link.name, result.reason, link.sent));
+                  });
+                }}>
+                  {`Send to ${backdrop.link.name}'s phone`}
+                </button>
+              )}
+              {/* The guardian's picture is theirs to remove, not the child's. */}
+              {backdrop.source !== 'guardian' && !backdrop.removeBlocked && (
+                <button type="button" role="menuitem" onClick={() => { setBackdropMenuOpen(false); void backdrop.clear(); }}>
+                  Remove
+                </button>
+              )}
             </div>
           )}
         </div>
