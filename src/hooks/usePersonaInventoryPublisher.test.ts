@@ -77,4 +77,64 @@ describe('usePersonaInventoryPublisher — what goes to the paired phone', () =>
     await waitFor(() => expect(mPublish).toHaveBeenCalledTimes(1), { timeout: 3000 });
     expect(mPublish.mock.calls[0][2]).toEqual([RELAY, RAIL]);
   });
+
+  describe('guardian backdrops', () => {
+    const H = '1'.repeat(64), K = '2'.repeat(64), H2 = '3'.repeat(64), K2 = '4'.repeat(64);
+    const bd = (hash = H, key = K) => ({ backdropHash: hash, backdropBlossomUrl: 'https://nostr.download', backdropKey: key, backdropUpdatedAt: 5 });
+    const withBackdrop = (d: DependantIdentity, fields = bd()): DependantIdentity => ({
+      ...d,
+      persona: { ...d.persona, ...fields },
+      naturalPerson: { ...d.naturalPerson, ...fields },
+      extraPersonas: (d.extraPersonas ?? []).map(e => ({ ...e, ...fields })),
+      naturalPersonActive: true,
+    });
+    const sent = (call = 0) => mPublish.mock.calls[call][0] as PersonaInventoryParams;
+
+    it('puts the backdrop fields on the wire for NP, persona and extras', async () => {
+      renderHook(() => usePersonaInventoryPublisher({ dependants: [withBackdrop(dep())], relayUrl: RELAY, encryptionKey: 'k' }));
+      await waitFor(() => expect(mPublish).toHaveBeenCalledTimes(1), { timeout: 3000 });
+      for (const e of [sent().naturalPerson!, sent().persona!, sent().extraPersonas[0]]) {
+        expect(e).toMatchObject({ backdropHash: H, backdropKey: K, backdropBlossomUrl: 'https://nostr.download', backdropUpdatedAt: 5 });
+      }
+    });
+
+    it('child-direct (a phone paired straight to a Heartwood) gets the backdrop fields too', async () => {
+      // Fixture shape = what `useChildDevicePairing` writes on a direct pairing:
+      // `bunkerEndpoint.authorizedClientPubkey` is the child's client key and
+      // `childDevice.clientPubkey` repeats it. The publisher's only gate is that
+      // `authorizedClientPubkey`, so a direct child is covered by the same send.
+      const d = withBackdrop(direct());
+      expect(d.bunkerEndpoint?.authorizedClientPubkey).toBe(d.childDevice?.clientPubkey);
+      renderHook(() => usePersonaInventoryPublisher({ dependants: [d], relayUrl: RELAY, encryptionKey: 'k' }));
+      await waitFor(() => expect(mPublish).toHaveBeenCalledTimes(1), { timeout: 3000 });
+      expect(sent().childTransportPubkey).toBe(CLIENT);
+      expect(sent().persona).toMatchObject({ backdropHash: H, backdropKey: K });
+      expect(mPublish.mock.calls[0][2]).toEqual([RELAY, RAIL]);
+    });
+
+    it('a changed hash, a changed key and a removal each republish', async () => {
+      const { rerender } = renderHook(({ deps }) => usePersonaInventoryPublisher({ dependants: deps, relayUrl: RELAY, encryptionKey: 'k' }),
+        { initialProps: { deps: [dep()] } });
+      await waitFor(() => expect(mPublish).toHaveBeenCalledTimes(1), { timeout: 3000 });
+      expect(sent(0).persona?.backdropHash).toBeUndefined();
+
+      rerender({ deps: [withBackdrop(dep())] });
+      await waitFor(() => expect(mPublish).toHaveBeenCalledTimes(2), { timeout: 3000 });
+      expect(sent(1).persona?.backdropHash).toBe(H);
+
+      // same bytes re-picked: same hash, new key
+      rerender({ deps: [withBackdrop(dep(), bd(H, K2))] });
+      await waitFor(() => expect(mPublish).toHaveBeenCalledTimes(3), { timeout: 3000 });
+      expect(sent(2).persona?.backdropKey).toBe(K2);
+
+      rerender({ deps: [withBackdrop(dep(), bd(H2, K2))] });
+      await waitFor(() => expect(mPublish).toHaveBeenCalledTimes(4), { timeout: 3000 });
+      expect(sent(3).persona?.backdropHash).toBe(H2);
+
+      rerender({ deps: [dep({ naturalPersonActive: true })] });
+      await waitFor(() => expect(mPublish).toHaveBeenCalledTimes(5), { timeout: 3000 });
+      expect(sent(4).persona?.backdropHash).toBeUndefined();
+      expect(sent(4).persona?.backdropKey).toBeUndefined();
+    });
+  });
 });
