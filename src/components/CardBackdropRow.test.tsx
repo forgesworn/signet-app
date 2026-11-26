@@ -1,0 +1,94 @@
+// @vitest-environment jsdom
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
+
+const hook = vi.hoisted(() => ({ state: {} as Record<string, unknown> }));
+vi.mock('../hooks/useCardBackdrop', async (orig) => ({
+  ...await orig<typeof import('../hooks/useCardBackdrop')>(),
+  useCardBackdrop: () => hook.state,
+}));
+
+import { CardBackdropRow } from './CardBackdropRow';
+import { BACKDROP_PRIVACY_COPY } from '../hooks/useCardBackdrop';
+
+const set = vi.fn();
+const clear = vi.fn();
+const base = () => ({ url: 'blob:x', source: 'own', link: null, set, clear });
+const pick = () => {
+  const input = document.querySelector('input[type="file"]') as HTMLInputElement;
+  fireEvent.change(input, { target: { files: [new File(['x'], 'p.png', { type: 'image/png' })] } });
+};
+
+beforeEach(() => { set.mockReset(); clear.mockReset(); hook.state = base(); });
+afterEach(cleanup);
+
+describe('CardBackdropRow copy', () => {
+  it('own persona: the device-local line, unchanged', () => {
+    render(<CardBackdropRow pubkey="a" />);
+    expect(screen.getByText(BACKDROP_PRIVACY_COPY)).toBeTruthy();
+  });
+
+  it('guardian\'s dependant card: the sent-to-their-phone line, not the device-local one', () => {
+    hook.state = { ...base(), link: { name: 'Lily', sent: true, send: vi.fn(), remove: vi.fn() } };
+    render(<CardBackdropRow pubkey="a" />);
+    expect(screen.getByText("Sent to Lily's phone, encrypted on the way. Not encrypted on either phone, and it shows while the app is locked.")).toBeTruthy();
+    expect(screen.queryByText(BACKDROP_PRIVACY_COPY)).toBeNull();
+  });
+
+  it('child\'s phone, guardian\'s picture showing: "Set by your guardian", Change, and no Remove', () => {
+    hook.state = { ...base(), source: 'guardian' };
+    render(<CardBackdropRow pubkey="a" />);
+    expect(screen.getByText('Set by your guardian')).toBeTruthy();
+    expect(screen.getByRole('button', { name: 'Change' })).toBeTruthy();
+    expect(screen.queryByRole('button', { name: 'Remove' })).toBeNull();
+  });
+
+  it('child\'s phone, own pick showing: the device-local line and a Remove', () => {
+    render(<CardBackdropRow pubkey="a" />);
+    expect(screen.getByRole('button', { name: 'Remove' })).toBeTruthy();
+    expect(screen.queryByText('Set by your guardian')).toBeNull();
+  });
+});
+
+describe('CardBackdropRow send state (guardian\'s dependant card)', () => {
+  const link = (sent: boolean) => ({ name: 'Lily', sent, send: vi.fn(), remove: vi.fn() });
+
+  it('a failed send says "Not sent to Lily\'s phone" with the reason, and the picture stays', async () => {
+    hook.state = { ...base(), link: link(false) };
+    set.mockResolvedValue({ ok: true, send: { ok: false, reason: 'Turn on Blossom uploads in Advanced settings, then choose it again.' } });
+    render(<CardBackdropRow pubkey="a" />);
+    pick();
+    await waitFor(() => expect(screen.getByText(/Not sent to Lily's phone\. Turn on Blossom uploads/)).toBeTruthy());
+  });
+
+  it('a failed replace says the earlier one is still on their phone', async () => {
+    hook.state = { ...base(), link: link(true) };
+    set.mockResolvedValue({ ok: true, send: { ok: false, reason: 'Check your connection and choose it again.' } });
+    render(<CardBackdropRow pubkey="a" />);
+    pick();
+    await waitFor(() => expect(screen.getByText(/Lily's phone still shows the earlier one/)).toBeTruthy());
+  });
+
+  it('a picture that was never sent (set before this existed) says so', () => {
+    hook.state = { ...base(), link: link(false) };
+    render(<CardBackdropRow pubkey="a" />);
+    expect(screen.getByText("Not sent to Lily's phone yet. Choose it again to send it.")).toBeTruthy();
+  });
+
+  it('a sent picture shows no warning, and a successful send clears an earlier one', async () => {
+    hook.state = { ...base(), link: link(true) };
+    set.mockResolvedValueOnce({ ok: true, send: { ok: false, reason: 'Nope.' } }).mockResolvedValueOnce({ ok: true, send: { ok: true } });
+    render(<CardBackdropRow pubkey="a" />);
+    expect(screen.queryByText(/Not sent/)).toBeNull();
+    pick();
+    await waitFor(() => expect(screen.getByText(/Not sent to Lily's phone\. Nope\./)).toBeTruthy());
+    pick();
+    await waitFor(() => expect(screen.queryByText(/Not sent/)).toBeNull());
+  });
+
+  it('with no picture there is nothing to say was not sent', () => {
+    hook.state = { ...base(), url: null, source: null, link: link(false) };
+    render(<CardBackdropRow pubkey="a" />);
+    expect(screen.queryByText(/Not sent/)).toBeNull();
+  });
+});
