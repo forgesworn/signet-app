@@ -87,6 +87,32 @@ export async function publishLegacyUnpairedNotice(
   }
 }
 
+/** What a notice needs, captured before the endpoint is cleared or its record deleted. */
+export interface LegacyUnpairTarget {
+  endpoint: { privateKey: string; authorizedClientPubkey: string };
+  relays: string[];
+}
+
+/**
+ * Run `clear` (the step that destroys the endpoint: a Revoke's clear or a
+ * removal's delete), and only once it has completed publish the notice from
+ * the target captured BEFORE it. A notice must exist only when its endpoint is
+ * gone for good: sent first, a clear that never lands (a crash, an IDB error)
+ * would leave the endpoint alive, and a re-pair that reuses it would find the
+ * notice still on the relay and read the fresh pairing as unpaired. So a
+ * throwing `clear` sends nothing and rethrows; a failing publish never fails
+ * the caller (best effort, capped at `LEGACY_UNPAIR_PUBLISH_CAP_MS`).
+ */
+export async function clearThenPublishLegacyUnpair<T>(
+  target: LegacyUnpairTarget | null,
+  clear: () => Promise<T>,
+  opts?: Parameters<typeof publishLegacyUnpairedNotice>[2],
+): Promise<T> {
+  const result = await clear();
+  if (target) await publishLegacyUnpairedNotice(target.endpoint, target.relays, opts);
+  return result;
+}
+
 /** Whether `ev` tells THIS legacy pairing it was revoked (see the module note). */
 export function acceptLegacyUnpairedNotice(
   ev: NostrEvent,

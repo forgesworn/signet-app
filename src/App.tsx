@@ -414,7 +414,7 @@ import { useChildRulesSync } from './hooks/useChildRulesSync';
 import { useChildRulesPublisher } from './hooks/useChildRulesPublisher';
 import { useChildActivityPublisher } from './hooks/useChildActivityPublisher';
 import { buildUnpairedNotice } from './lib/child-activity';
-import { publishLegacyUnpairedNotice } from './lib/legacy-child-unpair';
+import { clearThenPublishLegacyUnpair, type LegacyUnpairTarget } from './lib/legacy-child-unpair';
 import { useLegacyChildUnpaired } from './hooks/useLegacyChildUnpaired';
 import { pendingRuleSeeds, phoneServedDependants, usesChildDirectPairing } from './lib/child-device-pairing';
 import { useChildAsks, type PendingChildAsk } from './hooks/useChildAsks';
@@ -15593,17 +15593,24 @@ function AppContent() {
           clearDependantBunkerEndpoint={async (pubkey) => {
             const key = encryptionKey || await requestAuth({ purpose: 'manage-dependant', action: 'pair-device', depName: activeDependant.displayName });
             if (!key) throw new Error('Authentication required');
-            // Before the endpoint goes, tell the child's phone it was revoked:
+            // Once the endpoint has gone, tell the child's phone it was revoked:
             // the unpaired notice, signed by the endpoint key, addressed to the
-            // phone's client key, on the inventory's relays. Best effort and
-            // capped at 5 s; offline or refused, the revoke still completes.
+            // phone's client key, on the inventory's relays. What it needs is
+            // captured here, BEFORE the clear, and it is published only after
+            // the clear has saved: a notice for an endpoint that survived
+            // would undo a re-pair onto it. Best effort and capped at 5 s;
+            // offline or refused, the revoke still completes.
+            let target: LegacyUnpairTarget | null = null;
             try {
               const fresh = (await loadFreshDependants(key)).find(d => d.id === pubkey);
               if (fresh?.bunkerEndpoint) {
-                await publishLegacyUnpairedNotice(fresh.bunkerEndpoint, guardianToChildRelays(fresh, [preferences.relayUrl ?? DEFAULT_RELAY_URL]));
+                target = {
+                  endpoint: { privateKey: fresh.bunkerEndpoint.privateKey, authorizedClientPubkey: fresh.bunkerEndpoint.authorizedClientPubkey ?? '' },
+                  relays: guardianToChildRelays(fresh, [preferences.relayUrl ?? DEFAULT_RELAY_URL]),
+                };
               }
             } catch { /* best effort */ }
-            return clearDependantBunkerEndpoint(pubkey, key);
+            return clearThenPublishLegacyUnpair(target, () => clearDependantBunkerEndpoint(pubkey, key));
           }}
           saveDependantPairingSecret={async (pubkey, secret) => {
             const key = encryptionKey || await requestAuth({ purpose: 'manage-dependant', action: 'pair-device', depName: activeDependant.displayName });

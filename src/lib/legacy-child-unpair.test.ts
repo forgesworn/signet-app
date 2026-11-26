@@ -38,7 +38,7 @@ import { LocalSigningBackend } from './signing-backend';
 import { subscribePersonaInventory, parsePersonaInventoryPayload } from './persona-inventory-sync';
 import { CHILD_UNPAIRED_D_TAG } from './child-activity';
 import {
-  acceptLegacyUnpairedNotice, buildLegacyUnpairedNotice, publishLegacyUnpairedNotice, LEGACY_UNPAIR_CLOCK_SKEW_S,
+  acceptLegacyUnpairedNotice, buildLegacyUnpairedNotice, publishLegacyUnpairedNotice, clearThenPublishLegacyUnpair, LEGACY_UNPAIR_CLOCK_SKEW_S,
 } from './legacy-child-unpair';
 import type { PairedChildRecord } from '../types';
 
@@ -166,5 +166,35 @@ describe('publishLegacyUnpairedNotice (guardian, before the endpoint is cleared)
     expect(await publishLegacyUnpairedNotice({ privateKey: endpointPriv, authorizedClientPubkey: clientPub }, [RELAY], { publish: throwing })).toBe(false);
     const hanging = vi.fn(() => new Promise<boolean>(() => {}));
     expect(await publishLegacyUnpairedNotice({ privateKey: endpointPriv, authorizedClientPubkey: clientPub }, [RELAY], { publish: hanging, capMs: 30 })).toBe(false);
+  });
+});
+
+describe('clearThenPublishLegacyUnpair (the notice follows the clear)', () => {
+  const target = () => ({ endpoint: { privateKey: endpointPriv, authorizedClientPubkey: clientPub }, relays: [RELAY] });
+
+  it('publishes only after the clear has completed', async () => {
+    const order: string[] = [];
+    const publish = vi.fn(async () => { order.push('publish'); return true; });
+    await clearThenPublishLegacyUnpair(target(), async () => { await flush(); order.push('cleared'); }, { publish, nowS: NOW });
+    expect(order).toEqual(['cleared', 'publish']);
+  });
+
+  it('sends no notice when the clear fails, and rethrows (the endpoint survives, so a re-pair onto it must not meet a notice)', async () => {
+    const publish = vi.fn(async () => true);
+    await expect(clearThenPublishLegacyUnpair(target(), async () => { throw new Error('idb'); }, { publish })).rejects.toThrow('idb');
+    expect(publish).not.toHaveBeenCalled();
+  });
+
+  it('completes and returns the clear result when the publish fails or hangs', async () => {
+    const throwing = vi.fn(async () => { throw new Error('offline'); });
+    expect(await clearThenPublishLegacyUnpair(target(), async () => 'done', { publish: throwing })).toBe('done');
+    const hanging = vi.fn(() => new Promise<boolean>(() => {}));
+    expect(await clearThenPublishLegacyUnpair(target(), async () => 'done', { publish: hanging, capMs: 30 })).toBe('done');
+  });
+
+  it('with nothing to tell, just clears', async () => {
+    const publish = vi.fn(async () => true);
+    expect(await clearThenPublishLegacyUnpair(null, async () => 7, { publish })).toBe(7);
+    expect(publish).not.toHaveBeenCalled();
   });
 });
