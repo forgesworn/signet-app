@@ -4,6 +4,7 @@ import { act, cleanup, renderHook, waitFor } from '@testing-library/react';
 
 const store = vi.hoisted(() => ({
   rows: new Map<string, Blob>(),
+  guardian: new Map<string, { blob: Blob; hash: string }>(),
   failDelete: false,
 }));
 
@@ -14,10 +15,15 @@ vi.mock('../lib/db', () => ({
     if (store.failDelete) throw new Error('idb unavailable');
     store.rows.delete(pubkey);
   }),
+  getGuardianBackdrop: vi.fn(async (pubkey: string) => store.guardian.get(pubkey) ?? null),
+  deleteGuardianBackdrop: vi.fn(async (pubkey: string) => { store.guardian.delete(pubkey); }),
 }));
 
+import { createElement, type ReactNode } from 'react';
+import { DependantBackdropContext, type DependantBackdropLink } from '../lib/backdrop-send-context';
 import {
   useCardBackdrop,
+  refreshCardBackdrop,
   forgetCardBackdrop,
   peekCardBackdropUrl,
   resetCardBackdropCacheForTests,
@@ -33,6 +39,7 @@ function imageFile(size = 8, type = 'image/png'): File {
 
 beforeEach(() => {
   store.rows.clear();
+  store.guardian.clear();
   store.failDelete = false;
   counter = 0;
   resetCardBackdropCacheForTests();
@@ -122,5 +129,127 @@ describe('forgetCardBackdrop', () => {
     await expect(forgetCardBackdrop(PK)).resolves.toBeUndefined();
 
     expect(peekCardBackdropUrl(PK)).toBeNull();
+  });
+});
+
+describe('own pick beats the guardian\'s picture (child\'s phone)', () => {
+  const jpeg = (t: string) => new Blob([t], { type: 'image/jpeg' });
+
+  it('shows the guardian\'s picture when the child has none of their own', async () => {
+    store.guardian.set(PK, { blob: jpeg('g'), hash: 'h'.repeat(64) });
+    const { result } = renderHook(() => useCardBackdrop(PK));
+    await waitFor(() => expect(result.current.url).not.toBeNull());
+    expect(result.current.source).toBe('guardian');
+  });
+
+  it('prefers the child\'s own row when both exist', async () => {
+    store.guardian.set(PK, { blob: jpeg('g'), hash: 'h'.repeat(64) });
+    store.rows.set(PK, jpeg('own'));
+    const { result } = renderHook(() => useCardBackdrop(PK));
+    await waitFor(() => expect(result.current.url).not.toBeNull());
+    expect(result.current.source).toBe('own');
+  });
+
+  it('picking their own replaces the guardian\'s picture, and keeps the guardian\'s row', async () => {
+    store.guardian.set(PK, { blob: jpeg('g'), hash: 'h'.repeat(64) });
+    const { result } = renderHook(() => useCardBackdrop(PK));
+    await waitFor(() => expect(result.current.source).toBe('guardian'));
+    await act(async () => { await result.current.set(imageFile()); });
+    expect(result.current.source).toBe('own');
+    expect(store.guardian.has(PK)).toBe(true);
+  });
+
+  it('removing their own pick lets the guardian\'s reappear', async () => {
+    store.guardian.set(PK, { blob: jpeg('g'), hash: 'h'.repeat(64) });
+    const { result } = renderHook(() => useCardBackdrop(PK));
+    await waitFor(() => expect(result.current.source).toBe('guardian'));
+    await act(async () => { await result.current.set(imageFile()); });
+    expect(result.current.source).toBe('own');
+    await act(async () => { await result.current.clear(); });
+    expect(store.rows.has(PK)).toBe(false);
+    expect(result.current.source).toBe('guardian');
+    expect(result.current.url).not.toBeNull();
+  });
+
+  it('refreshCardBackdrop repaints a mounted card when the guardian\'s row lands or is dropped', async () => {
+    const { result } = renderHook(() => useCardBackdrop(PK));
+    await waitFor(() => expect(result.current.url).toBeNull());
+    store.guardian.set(PK, { blob: jpeg('g'), hash: 'h'.repeat(64) });
+    await act(async () => { await refreshCardBackdrop(PK); });
+    expect(result.current.source).toBe('guardian');
+    store.guardian.delete(PK);
+    await act(async () => { await refreshCardBackdrop(PK); });
+    expect(result.current.url).toBeNull();
+    expect(result.current.source).toBeNull();
+  });
+
+  it('forgetCardBackdrop deletes both rows', async () => {
+    store.guardian.set(PK, { blob: jpeg('g'), hash: 'h'.repeat(64) });
+    store.rows.set(PK, jpeg('own'));
+    await act(async () => { await forgetCardBackdrop(PK); });
+    expect(store.rows.has(PK)).toBe(false);
+    expect(store.guardian.has(PK)).toBe(false);
+    expect(peekCardBackdropUrl(PK)).toBeNull();
+  });
+
+  it('forgetCardBackdrop still drops the guardian row when the own delete fails', async () => {
+    store.guardian.set(PK, { blob: jpeg('g'), hash: 'h'.repeat(64) });
+    store.failDelete = true;
+    await expect(forgetCardBackdrop(PK)).resolves.toBeUndefined();
+    expect(store.guardian.has(PK)).toBe(false);
+  });
+});
+
+describe('a guardian\'s dependant card sends the backdrop on', () => {
+  function withLink(link: DependantBackdropLink | null) {
+    return ({ children }: { children: ReactNode }) =>
+      createElement(DependantBackdropContext.Provider, { value: (pk: string) => (pk === PK ? link : null) }, children);
+  }
+  const mkLink = (over: Partial<DependantBackdropLink> = {}): DependantBackdropLink => ({
+    name: 'Lily', sent: false, send: vi.fn(async () => ({ ok: true as const })), remove: vi.fn(async () => undefined), ...over,
+  });
+
+  it('saves locally first, then sends the stored blob and reports how it went', async () => {
+    const link = mkLink();
+    const { result } = renderHook(() => useCardBackdrop(PK), { wrapper: withLink(link) });
+    let out!: Awaited<ReturnType<typeof result.current.set>>;
+    await act(async () => { out = await result.current.set(imageFile()); });
+    expect(out).toEqual({ ok: true, send: { ok: true } });
+    expect(store.rows.get(PK)).toBeDefined();
+    expect(link.send).toHaveBeenCalledWith(store.rows.get(PK));
+  });
+
+  it('a failed send keeps the local picture and returns the reason', async () => {
+    const link = mkLink({ send: vi.fn(async () => ({ ok: false as const, reason: 'Server said no.' })) });
+    const { result } = renderHook(() => useCardBackdrop(PK), { wrapper: withLink(link) });
+    let out!: Awaited<ReturnType<typeof result.current.set>>;
+    await act(async () => { out = await result.current.set(imageFile()); });
+    expect(out).toEqual({ ok: true, send: { ok: false, reason: 'Server said no.' } });
+    expect(store.rows.has(PK)).toBe(true);
+    expect(result.current.url).not.toBeNull();
+  });
+
+  it('does not send when the picture could not be saved locally', async () => {
+    const link = mkLink();
+    const { result } = renderHook(() => useCardBackdrop(PK), { wrapper: withLink(link) });
+    await act(async () => { await result.current.set(imageFile(8, 'text/plain')); });
+    expect(link.send).not.toHaveBeenCalled();
+  });
+
+  it('removing clears locally then removes the copy sent to the child', async () => {
+    const link = mkLink();
+    const { result } = renderHook(() => useCardBackdrop(PK), { wrapper: withLink(link) });
+    await act(async () => { await result.current.set(imageFile()); });
+    await act(async () => { await result.current.clear(); });
+    expect(store.rows.has(PK)).toBe(false);
+    expect(link.remove).toHaveBeenCalledTimes(1);
+  });
+
+  it('with no link (own persona, or a paired-child install) nothing is sent and no send result is returned', async () => {
+    const { result } = renderHook(() => useCardBackdrop(PK), { wrapper: withLink(null) });
+    let out!: Awaited<ReturnType<typeof result.current.set>>;
+    await act(async () => { out = await result.current.set(imageFile()); });
+    expect(out).toEqual({ ok: true });
+    expect(result.current.link).toBeNull();
   });
 });

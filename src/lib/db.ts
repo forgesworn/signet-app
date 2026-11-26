@@ -1963,6 +1963,44 @@ export async function deleteCardBackdrop(pubkey: string): Promise<void> {
   await db.delete('preferences', `backdrop:${pubkey}`);
 }
 
+// --- Guardian-sent card backdrops (child's phone) ---
+// The picture a guardian set for a paired child's persona, fetched from Blossom
+// and decrypted here. A SEPARATE row from the child's own `backdrop:<pubkey>`
+// pick, so the child's own always wins and removing it lets the guardian's
+// reappear. `hash` is the blob hash the picture came from, so an unlock whose
+// inventory names the same hash does not fetch again. Same store and lifetime
+// as the own rows (`clear('preferences')` wipes both).
+
+export async function getGuardianBackdrop(pubkey: string): Promise<{ blob: Blob; hash: string } | null> {
+  const db = await getDB();
+  const row = await db.get('preferences', `backdrop-guardian:${pubkey}`) as { blob?: unknown; hash?: unknown } | undefined;
+  return row && row.blob instanceof Blob && typeof row.hash === 'string' ? { blob: row.blob, hash: row.hash } : null;
+}
+
+export async function setGuardianBackdrop(pubkey: string, blob: Blob, hash: string): Promise<void> {
+  const db = await getDB();
+  await db.put('preferences', { id: `backdrop-guardian:${pubkey}`, blob, hash });
+}
+
+export async function deleteGuardianBackdrop(pubkey: string): Promise<void> {
+  const db = await getDB();
+  await db.delete('preferences', `backdrop-guardian:${pubkey}`);
+}
+
+/**
+ * The pubkeys that have a backdrop row of each kind. A key-range scan (never
+ * `getAll`), used to sweep rows whose persona has left the inventory, including
+ * ones a crashed earlier run left behind.
+ */
+export async function listBackdropRowPubkeys(): Promise<{ own: string[]; guardian: string[] }> {
+  const db = await getDB();
+  const keys = async (prefix: string): Promise<string[]> =>
+    (await db.getAllKeys('preferences', IDBKeyRange.bound(prefix, `${prefix}\uffff`)))
+      .filter((k): k is string => typeof k === 'string' && k.startsWith(prefix))
+      .map(k => k.slice(prefix.length));
+  return { own: await keys('backdrop:'), guardian: await keys('backdrop-guardian:') };
+}
+
 // --- Origin Policies (per-origin identity-selection memory) ---
 
 /** Normalise an origin to the form used as the keyPath — no path, no trailing slash. */
