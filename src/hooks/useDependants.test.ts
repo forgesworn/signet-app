@@ -543,11 +543,13 @@ describe('useDependants.setDependantPersonaBackdrop', () => {
     // Same closures again, awaited one after the other: the second used to save
     // the pre-change snapshot it closed over.
     await act(async () => { await setBackdrop(dep.id, EXTRA, bd('2')); });
+    expect((await getDependants(g.naturalPerson.publicKey, KEY))[0].extraPersonas![0].backdropHash).toBe('2'.repeat(64));
     await act(async () => { await updatePersonaVisibility(dep.id, EXTRA, false); });
     await act(async () => { await updateDependantName(dep.id, 'Robin B'); });
     const stored = (await getDependants(g.naturalPerson.publicKey, KEY))[0];
     expect(stored.persona).toMatchObject({ backdropHash: '1'.repeat(64), avatarHash: '4'.repeat(64), avatarKey: '4'.repeat(64) });
-    expect(stored.extraPersonas![0].backdropHash).toBe('2'.repeat(64));
+    // Hidden from the phone: the backdrop sent for it is cleared on purpose (it no longer reaches the phone).
+    expect(stored.extraPersonas![0].backdropHash).toBeUndefined();
     expect(stored.hiddenOnPairedDeviceKeys).toEqual([EXTRA]);
     expect(stored.displayName).toBe('Robin B');
   });
