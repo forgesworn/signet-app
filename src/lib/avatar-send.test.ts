@@ -119,6 +119,71 @@ describe('overlapping avatar changes on one slot', () => {
     expect(d.deleteBlob).toHaveBeenCalledWith(AVATAR_UPLOADER_DOMAIN, 'a'.repeat(64), SERVER);
   });
 
+  it('B fails before saving: A (older, uploaded first) saves after all', async () => {
+    const first = deferred<AvatarMeta>();
+    const second = deferred<AvatarMeta>();
+    const { d } = deps();
+    const a = setSlotAvatar({ ...d, upload: () => first.promise });
+    const b = setSlotAvatar({ ...d, upload: async () => { await second.promise; throw new Error('refused'); } });
+    first.resolve(metaN('a'));
+    second.resolve(metaN('b'));
+    await expect(b).rejects.toThrow('refused');
+    const res = await a;
+    expect(res.ok).toBe(true);
+    expect(d.saveSlot).toHaveBeenCalledTimes(1);
+    expect(d.saveSlot).toHaveBeenCalledWith(metaN('a'));
+  });
+
+  it('B still in flight when A is ready, then B saves: A waits, then is discarded', async () => {
+    const first = deferred<AvatarMeta>();
+    const second = deferred<AvatarMeta>();
+    const { d } = deps();
+    const a = setSlotAvatar({ ...d, upload: () => first.promise });
+    const b = setSlotAvatar({ ...d, upload: () => second.promise });
+    let aDone = false;
+    void a.then(() => { aDone = true; });
+    first.resolve(metaN('a'));
+    await new Promise(r => setTimeout(r, 20));
+    expect(aDone).toBe(false);
+    second.resolve(metaN('b'));
+    expect((await b).ok).toBe(true);
+    expect(await a).toEqual({ ok: false, reason: 'superseded' });
+    expect(d.saveSlot).toHaveBeenCalledTimes(1);
+    expect(d.saveSlot).toHaveBeenCalledWith(metaN('b'));
+    expect(d.deleteBlob).toHaveBeenCalledWith(AVATAR_UPLOADER_DOMAIN, 'a'.repeat(64), SERVER);
+  });
+
+  it('B fails but C saves: A is discarded', async () => {
+    const up = { a: deferred<AvatarMeta>(), b: deferred<AvatarMeta>(), c: deferred<AvatarMeta>() };
+    const { d } = deps();
+    const a = setSlotAvatar({ ...d, upload: () => up.a.promise });
+    const b = setSlotAvatar({ ...d, upload: async () => { await up.b.promise; throw new Error('network'); } });
+    const c = setSlotAvatar({ ...d, upload: () => up.c.promise });
+    up.a.resolve(metaN('a'));
+    up.b.resolve(metaN('b'));
+    await expect(b).rejects.toThrow('network');
+    up.c.resolve(metaN('c'));
+    expect((await c).ok).toBe(true);
+    expect(await a).toEqual({ ok: false, reason: 'superseded' });
+    expect(d.saveSlot).toHaveBeenCalledTimes(1);
+    expect(d.saveSlot).toHaveBeenCalledWith(metaN('c'));
+  });
+
+  it('B fails, but a clear came after A: A is discarded', async () => {
+    const up = { a: deferred<AvatarMeta>(), b: deferred<AvatarMeta>() };
+    const { d } = deps();
+    const clearSlot = vi.fn(async () => ({}));
+    const a = setSlotAvatar({ ...d, upload: () => up.a.promise });
+    const clear = clearSlotAvatar({ ...d, clearSlot } as AvatarClearDeps);
+    const b = setSlotAvatar({ ...d, upload: async () => { await up.b.promise; throw new Error('network'); } });
+    up.b.resolve(metaN('b'));
+    await expect(b).rejects.toThrow('network');
+    up.a.resolve(metaN('a'));
+    expect(await a).toEqual({ ok: false, reason: 'superseded' });
+    expect((await clear).ok).toBe(true);
+    expect(d.saveSlot).not.toHaveBeenCalled();
+  });
+
   it('a clear after a set wins: the set still uploading saves nothing and its blob is deleted', async () => {
     const upload = deferred<AvatarMeta>();
     const { d } = deps();

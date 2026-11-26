@@ -195,18 +195,86 @@ describe('overlapping sends and removes on one slot', () => {
     expect(d.deleteBlob).toHaveBeenCalledWith(BACKDROP_UPLOADER_DOMAIN, 'a'.repeat(64), SERVER);
   });
 
-  it('a newer pick wins when the older upload finishes first too', async () => {
+  it('a newer pick wins when the older upload finishes first too (the older one waits for it, then discards)', async () => {
     const first = deferred<ReturnType<typeof metaN>>();
     const second = deferred<ReturnType<typeof metaN>>();
     const { d } = deps();
     const a = sendBackdropToChild(blob, { ...d, upload: vi.fn(() => first.promise) });
     const b = sendBackdropToChild(blob, { ...d, upload: vi.fn(() => second.promise) });
+    let aDone = false;
+    void a.then(() => { aDone = true; });
     first.resolve(metaN('a'));
-    expect((await a).ok).toBe(false);
+    await new Promise(r => setTimeout(r, 20));
+    // B is still uploading: A does not decide early.
+    expect(aDone).toBe(false);
+    expect(d.saveSlot).not.toHaveBeenCalled();
     second.resolve(metaN('b'));
+    expect((await a).ok).toBe(false);
     expect((await b).ok).toBe(true);
     expect(d.saveSlot).toHaveBeenCalledTimes(1);
     expect(d.saveSlot).toHaveBeenCalledWith(metaN('b'), DIGEST, expect.any(Function));
+  });
+
+  it('a newer pick that fails before saving no longer discards the older one: A saves', async () => {
+    const first = deferred<ReturnType<typeof metaN>>();
+    const second = deferred<ReturnType<typeof metaN>>();
+    const { d } = deps();
+    const a = sendBackdropToChild(blob, { ...d, upload: vi.fn(() => first.promise) });
+    const b = sendBackdropToChild(blob, { ...d, upload: vi.fn(async () => { await second.promise; throw new BlossomUploadError(403, BLOSSOM_REFUSED_COPY); }) });
+    first.resolve(metaN('a'));
+    second.resolve(metaN('b'));
+    expect((await b).ok).toBe(false);
+    expect((await a).ok).toBe(true);
+    expect(d.saveSlot).toHaveBeenCalledTimes(1);
+    expect(d.saveSlot).toHaveBeenCalledWith(metaN('a'), DIGEST, expect.any(Function));
+    expect(d.deleteBlob).not.toHaveBeenCalledWith(BACKDROP_UPLOADER_DOMAIN, 'a'.repeat(64), SERVER);
+  });
+
+  it('B fails but C saves: A is discarded', async () => {
+    const up = { a: deferred<ReturnType<typeof metaN>>(), b: deferred<ReturnType<typeof metaN>>(), c: deferred<ReturnType<typeof metaN>>() };
+    const { d } = deps();
+    const a = sendBackdropToChild(blob, { ...d, upload: vi.fn(() => up.a.promise) });
+    const b = sendBackdropToChild(blob, { ...d, upload: vi.fn(async () => { await up.b.promise; throw new Error('network'); }) });
+    const c = sendBackdropToChild(blob, { ...d, upload: vi.fn(() => up.c.promise) });
+    up.a.resolve(metaN('a'));
+    up.b.resolve(metaN('b'));
+    expect((await b).ok).toBe(false);
+    up.c.resolve(metaN('c'));
+    expect((await c).ok).toBe(true);
+    expect((await a).ok).toBe(false);
+    expect(d.saveSlot).toHaveBeenCalledTimes(1);
+    expect(d.saveSlot).toHaveBeenCalledWith(metaN('c'), DIGEST, expect.any(Function));
+    expect(d.deleteBlob).toHaveBeenCalledWith(BACKDROP_UPLOADER_DOMAIN, 'a'.repeat(64), SERVER);
+  });
+
+  it('B fails, but a remove came after A: A is still discarded', async () => {
+    const up = { a: deferred<ReturnType<typeof metaN>>(), b: deferred<ReturnType<typeof metaN>>() };
+    const { d } = deps();
+    const a = sendBackdropToChild(blob, { ...d, upload: vi.fn(() => up.a.promise) });
+    const removal = removeBackdropFromChild(d);
+    const b = sendBackdropToChild(blob, { ...d, upload: vi.fn(async () => { await up.b.promise; throw new Error('network'); }) });
+    up.b.resolve(metaN('b'));
+    expect((await b).ok).toBe(false);
+    up.a.resolve(metaN('a'));
+    expect((await a).ok).toBe(false);
+    await removal;
+    expect(d.saveSlot).toHaveBeenCalledTimes(1);
+    expect(d.saveSlot).toHaveBeenCalledWith(null);
+  });
+
+  it('an older send waiting on a newer upload that never settles gives up at the cap', async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    try {
+      const { NEWER_SEND_WAIT_MS } = await import('./slot-sequencer');
+      const { d } = deps();
+      const a = sendBackdropToChild(blob, { ...d, upload: vi.fn(async () => metaN('a')) });
+      void sendBackdropToChild(blob, { ...d, upload: vi.fn(() => new Promise<never>(() => {})) });
+      await vi.advanceTimersByTimeAsync(NEWER_SEND_WAIT_MS + 10);
+      expect((await a).ok).toBe(false);
+      expect(d.saveSlot).not.toHaveBeenCalled();
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it('a remove during an upload wins: the pointer is cleared and the upload is discarded', async () => {
