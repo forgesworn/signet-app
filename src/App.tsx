@@ -400,6 +400,7 @@ import { identityKeypairs } from './lib/contacts-sync';
 import { deleteIdentityRecord } from './lib/db';
 import { forgetCardBackdrop } from './hooks/useCardBackdrop';
 import { buildDependantBackdropLookup } from './lib/backdrop-send';
+import { useGuardianBackdrops } from './hooks/useGuardianBackdrops';
 import { DependantBackdropContext } from './lib/backdrop-send-context';
 import { forgetSyncCacheKeys } from './lib/sync-decrypt-cache';
 import { forgetDerivedKeys, rememberDerivedKeysFor } from './lib/crypto-store';
@@ -1159,6 +1160,7 @@ function AppContent() {
   // See deps on the big signing-backend effect
   // near `identity?.encrypted, encryptionKey, activeDependantId`.
   const [pairedChildBumpCounter, setPairedChildBumpCounter] = useState(0);
+  const [inventoryMergeCount, setInventoryMergeCount] = useState(0);
   // One-shot anchor for SecuritySettings sub-sections. Set by callers that
   // route INTO Security settings to focus a specific control (currently just
   // the Bunker toggle from dep-pairing "Open Security" CTAs).
@@ -2208,7 +2210,15 @@ function AppContent() {
       // Reload identity from IDB so the updated persona rows propagate
       // into React state and the carousel re-renders.
       await reloadIdentity();
+      setInventoryMergeCount(c => c + 1);
     },
+  });
+  // The guardian's card backdrops for this child's personas: fetched while
+  // unlocked on a paired-child install, retried on every inventory apply.
+  useGuardianBackdrops({
+    enabled: preferences.signingMode === 'paired-child' && !!encryptionKey,
+    identity,
+    mergeCount: inventoryMergeCount,
   });
 
   const pairedContactPolicy = useChildContactPolicy({
