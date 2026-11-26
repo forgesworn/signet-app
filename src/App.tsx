@@ -399,6 +399,8 @@ import {
 import { identityKeypairs } from './lib/contacts-sync';
 import { deleteIdentityRecord } from './lib/db';
 import { forgetCardBackdrop } from './hooks/useCardBackdrop';
+import { buildDependantBackdropLookup } from './lib/backdrop-send';
+import { DependantBackdropContext } from './lib/backdrop-send-context';
 import { forgetSyncCacheKeys } from './lib/sync-decrypt-cache';
 import { forgetDerivedKeys, rememberDerivedKeysFor } from './lib/crypto-store';
 import { isAppInForeground, subscribeAppForeground } from './lib/app-foreground';
@@ -928,7 +930,7 @@ function AppContent() {
   // Always use NP pubkey for dependant lookup — dependants are stored with guardianPubkey
   // as the NP key, so switching to persona must not lose sight of them.
   const guardianNpPubkey = identity?.naturalPerson.publicKey;
-  const { dependants, loading: dependantsLoading, loadedWithKey: dependantsLoadedWithKey, addDependant, importDependant, removeDependant: removeDependantRecord, updateAutonomyStage, updateAuditVisibility, updatePetitionOnDeny, updateDependantName, updateDependantPhoto, switchDependantPrimary, updateDependantPersonaName, activateDependantNaturalPerson, addDependantPersona, updatePersonaVisibility, removeDependantExtraPersona, reorderDependants, ensureDependantBunkerEndpoint, clearDependantBunkerEndpoint, saveDependantPairingSecret, bindDependantBunkerClient, setDependantPersonaAvatar, clearDependantPersonaAvatar, setDependantPersonaContactAvatar, clearDependantPersonaContactAvatar, setDependantPersonaPublicProfile, clearDependantPersonaPublicProfile, setDependantSlotNip05Check, setDepExtraPersonaHidden, reload: reloadDependants, loadFreshDependants } = useDependants(
+  const { dependants, loading: dependantsLoading, loadedWithKey: dependantsLoadedWithKey, addDependant, importDependant, removeDependant: removeDependantRecord, updateAutonomyStage, updateAuditVisibility, updatePetitionOnDeny, updateDependantName, updateDependantPhoto, switchDependantPrimary, updateDependantPersonaName, activateDependantNaturalPerson, addDependantPersona, updatePersonaVisibility, removeDependantExtraPersona, reorderDependants, ensureDependantBunkerEndpoint, clearDependantBunkerEndpoint, saveDependantPairingSecret, bindDependantBunkerClient, setDependantPersonaAvatar, clearDependantPersonaAvatar, setDependantPersonaContactAvatar, clearDependantPersonaContactAvatar, setDependantPersonaBackdrop, setDependantPersonaPublicProfile, clearDependantPersonaPublicProfile, setDependantSlotNip05Check, setDepExtraPersonaHidden, reload: reloadDependants, loadFreshDependants } = useDependants(
     guardianNpPubkey, identity?.id, encryptionKey,
   );
 
@@ -944,6 +946,23 @@ function AppContent() {
   /** Delete the private avatar a Change/Remove just replaced (R3); resolves with the one-line result. */
   const dropReplacedAvatar = (old: { hash: string; server: string } | undefined, newHash: string | undefined, key: string): Promise<string | undefined> =>
     deleteReplacedAvatar(old, newHash, (domain, hash, server) => deleteOwnBlob(domain, hash, server, key));
+  // A guardian-set card backdrop for a dependant's persona goes to the child's
+  // phone, encrypted, over the persona inventory. This is the card-to-child link
+  // `useCardBackdrop` reads from context; a paired-child install gets none, so it
+  // never uploads. The key is read live at send time, and the upload is signed by
+  // the backdrop-domain HMAC uploader (never a key derived from the content key).
+  const dependantBackdropLookup = useMemo(() => buildDependantBackdropLookup({
+    isPairedChild,
+    dependants,
+    getKey: () => encryptionKeyRef.current,
+    blossomUrl: preferences.defaultBlossomUrl ?? DEFAULT_BLOSSOM_URL,
+    blossomConsent,
+    setSlot: (depId, target, meta) => setDependantPersonaBackdrop(depId, target, meta
+      ? { hash: meta.hash, blossomUrl: meta.blossomUrl, keyHex: meta.keyHex, updatedAt: meta.updatedAt }
+      : null),
+    deleteBlob: (domain, hash, server) => deleteOwnBlob(domain, hash, server),
+  // `deleteOwnBlob` reads the live key from a ref, so it is not a dependency.
+  }), [isPairedChild, dependants, preferences.defaultBlossomUrl, blossomConsent, setDependantPersonaBackdrop]);
   // Home-ring backup nudge (spec §10) — replaces the retired no-lock nag in
   // the same slot. `identity` and `encryptionKey` gate it to the unlocked,
   // loaded state; the rule itself lives in `shouldShowBackupNudge`. Holding a
@@ -15903,6 +15922,7 @@ function AppContent() {
           </div> : null;
         })}
       {isPairedChild ? childReadyNotice : null}
+      <DependantBackdropContext.Provider value={dependantBackdropLookup}>
       <Carousel
         onHandshake={async (resolved, choose) => {
           const key = encryptionKey ?? await requestAuth({ purpose: 'unlock-app' });
@@ -16296,6 +16316,7 @@ function AppContent() {
           );
         })()}
       </Carousel>
+      </DependantBackdropContext.Provider>
       {authOverlay}{nip55Overlay}{homeApprovalOverlay}
           {handoffPickerOverlay}
     </>

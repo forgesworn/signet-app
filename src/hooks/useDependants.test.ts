@@ -353,3 +353,65 @@ describe('useDependants.loadedWithKey', () => {
     expect(childModeSessionStale({ unlocked: true, dependantsLoadedWithKey: true, childModeLive: false, sessionDependantId: kid.id, dependantIds: result.current.dependants.map(d => d.id) })).toBe(true);
   });
 });
+
+describe('useDependants.setDependantPersonaBackdrop', () => {
+  beforeEach(async () => {
+    await purgeAllUserData();
+  });
+
+  const EXTRA = '3'.repeat(64);
+  const bd = (n: string) => ({ hash: n.repeat(64), blossomUrl: 'https://nostr.download', keyHex: n.repeat(64), updatedAt: 9 });
+
+  async function setup() {
+    const g = await seedGuardian(false);
+    const { result } = renderHook(() => useDependants(g.naturalPerson.publicKey, g.id, KEY));
+    await waitFor(() => expect(result.current.loading).toBe(false));
+    let dep!: Awaited<ReturnType<typeof result.current.addDependant>>;
+    await act(async () => {
+      dep = await result.current.addDependant('Robin', undefined, { deviceDerive: async () => ({
+        naturalPerson: { publicKey: NP, privateKey: '' as const }, persona: { publicKey: PERSONA, privateKey: '' as const },
+      }) });
+    });
+    await act(async () => {
+      await result.current.addDependantPersona(dep.id, 'Games', undefined, { deviceDerive: async () => ({ publicKey: EXTRA, privateKey: '' as const }) });
+    });
+    return { g, result, dep };
+  }
+
+  it('stores the four fields on the persona, an extra and the NP, encrypted at rest', async () => {
+    const { g, result, dep } = await setup();
+    for (const [target, n] of [['persona', '1'], [EXTRA, '2'], ['natural-person', '3']] as const) {
+      await act(async () => { await result.current.setDependantPersonaBackdrop(dep.id, target, bd(n)); });
+    }
+    const stored = (await getDependants(g.naturalPerson.publicKey, KEY))[0];
+    expect(stored.persona).toMatchObject({ backdropHash: '1'.repeat(64), backdropKey: '1'.repeat(64), backdropBlossomUrl: 'https://nostr.download', backdropUpdatedAt: 9 });
+    expect(stored.extraPersonas![0]).toMatchObject({ backdropHash: '2'.repeat(64) });
+    expect(stored.naturalPerson).toMatchObject({ backdropHash: '3'.repeat(64) });
+    // The avatar fields were not touched.
+    expect(stored.persona.avatarHash).toBeUndefined();
+  });
+
+  it('reports the blob the slot pointed at before, from a FRESH read, and clears with null', async () => {
+    const { g, result, dep } = await setup();
+    let out!: Awaited<ReturnType<typeof result.current.setDependantPersonaBackdrop>>;
+    await act(async () => { out = await result.current.setDependantPersonaBackdrop(dep.id, 'persona', bd('1')); });
+    expect(out.previous).toBeUndefined();
+    await act(async () => { out = await result.current.setDependantPersonaBackdrop(dep.id, 'persona', bd('2')); });
+    expect(out.previous).toEqual({ hash: '1'.repeat(64), server: 'https://nostr.download' });
+    await act(async () => { out = await result.current.setDependantPersonaBackdrop(dep.id, 'persona', null); });
+    expect(out.previous).toEqual({ hash: '2'.repeat(64), server: 'https://nostr.download' });
+    const stored = (await getDependants(g.naturalPerson.publicKey, KEY))[0];
+    expect(stored.persona.backdropHash).toBeUndefined();
+    expect(stored.persona.backdropKey).toBeUndefined();
+    expect(stored.persona.backdropBlossomUrl).toBeUndefined();
+  });
+
+  it('is a no-op for an unknown dependant or slot', async () => {
+    const { result, dep } = await setup();
+    let out!: Awaited<ReturnType<typeof result.current.setDependantPersonaBackdrop>>;
+    await act(async () => { out = await result.current.setDependantPersonaBackdrop('f'.repeat(64), 'persona', bd('1')); });
+    expect(out).toEqual({});
+    await act(async () => { out = await result.current.setDependantPersonaBackdrop(dep.id, 'e'.repeat(64), bd('1')); });
+    expect(out).toEqual({});
+  });
+});

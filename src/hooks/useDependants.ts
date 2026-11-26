@@ -569,6 +569,50 @@ export function useDependants(
     await loadDependants();
   }, [guardianPubkey, encryptionKey, loadDependants]);
 
+  /**
+   * Set (or, with `null`, clear) the encrypted copy of a card backdrop that the
+   * guardian sends to the dependant's own phone. Only the pointer lives on the
+   * slot (`backdropHash/BlossomUrl/Key/UpdatedAt`); the picture itself is the
+   * device-local `backdrop:<pubkey>` row. Reads the dep FRESH from IDB, like
+   * the contact-avatar setters (C1), because an upload takes seconds and the
+   * `dependants` snapshot this closure holds may be older than a sync that
+   * landed meanwhile. Resolves with the blob the slot pointed at BEFORE the
+   * change, read from that same fresh record, so the caller deletes the right
+   * one (and only after this save, so the row no longer references it).
+   */
+  const setDependantPersonaBackdrop = useCallback(async (
+    depPubkey: string,
+    target: 'natural-person' | 'persona' | string,
+    backdrop: { hash: string; blossomUrl: string; keyHex: string; updatedAt: number } | null,
+  ): Promise<{ previous?: { hash: string; server: string } }> => {
+    if (!encryptionKey) throw new Error('Encryption key required');
+    if (!guardianPubkey) return {};
+    const all = await getDependants(guardianPubkey, encryptionKey);
+    const dep = all.find(d => d.id === depPubkey);
+    if (!dep) return {};
+    const slot = target === 'natural-person' ? dep.naturalPerson
+      : target === 'persona' ? dep.persona
+      : (dep.extraPersonas ?? []).find(p => p.publicKey === target);
+    if (!slot) return {};
+    const previous = slot.backdropHash && slot.backdropBlossomUrl
+      ? { hash: slot.backdropHash, server: slot.backdropBlossomUrl }
+      : undefined;
+    const patch = backdrop
+      ? { backdropHash: backdrop.hash, backdropBlossomUrl: backdrop.blossomUrl, backdropKey: backdrop.keyHex, backdropUpdatedAt: backdrop.updatedAt }
+      : { backdropHash: undefined, backdropBlossomUrl: undefined, backdropKey: undefined, backdropUpdatedAt: undefined };
+    let updated: DependantIdentity;
+    if (target === 'natural-person') {
+      updated = { ...dep, naturalPerson: { ...dep.naturalPerson, ...patch } };
+    } else if (target === 'persona') {
+      updated = { ...dep, persona: { ...dep.persona, ...patch } };
+    } else {
+      updated = { ...dep, extraPersonas: (dep.extraPersonas ?? []).map(p => (p.publicKey === target ? { ...p, ...patch } : p)) };
+    }
+    await saveDependant(updated, encryptionKey);
+    await loadDependants();
+    return { previous };
+  }, [guardianPubkey, encryptionKey, loadDependants]);
+
   /** Remove contact-card avatar metadata from a dep persona slot. This only
    *  clears the record: Stop sharing (App.tsx) deletes the share blob (R5).
    *  Reads the dep FRESH from IDB for the same stale-snapshot reason as
@@ -1095,5 +1139,5 @@ export function useDependants(
   }, [dependants, encryptionKey, loadDependants]);
 
 
-  return { dependants, loading, loadedWithKey, addDependant, importDependant, removeDependant, updateAutonomyStage, updateAuditVisibility, updatePetitionOnDeny, updateDependantName, updateDependantPhoto, switchDependantPrimary, updateDependantPersonaName, activateDependantNaturalPerson, addDependantPersona, updatePersonaVisibility, setDepExtraPersonaHidden, removeDependantExtraPersona, reorderDependants, ensureDependantBunkerEndpoint, clearDependantBunkerEndpoint, saveDependantPairingSecret, bindDependantBunkerClient, setDependantPersonaAvatar, clearDependantPersonaAvatar, setDependantPersonaContactAvatar, clearDependantPersonaContactAvatar, setDependantPersonaPublicProfile, clearDependantPersonaPublicProfile, setDependantSlotNip05Check, reload: loadDependants, loadFreshDependants };
+  return { dependants, loading, loadedWithKey, addDependant, importDependant, removeDependant, updateAutonomyStage, updateAuditVisibility, updatePetitionOnDeny, updateDependantName, updateDependantPhoto, switchDependantPrimary, updateDependantPersonaName, activateDependantNaturalPerson, addDependantPersona, updatePersonaVisibility, setDepExtraPersonaHidden, removeDependantExtraPersona, reorderDependants, ensureDependantBunkerEndpoint, clearDependantBunkerEndpoint, saveDependantPairingSecret, bindDependantBunkerClient, setDependantPersonaAvatar, clearDependantPersonaAvatar, setDependantPersonaContactAvatar, clearDependantPersonaContactAvatar, setDependantPersonaBackdrop, setDependantPersonaPublicProfile, clearDependantPersonaPublicProfile, setDependantSlotNip05Check, reload: loadDependants, loadFreshDependants };
 }
