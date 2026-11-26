@@ -481,6 +481,27 @@ describe('useDependants.setDependantPersonaBackdrop', () => {
     expect(stored.persona.backdropHash).toBeUndefined();
   });
 
+  it('a write that resolves after a lock does not put decrypted records back into state', async () => {
+    const g = await seedGuardian(false);
+    const SECRET = '9'.repeat(64);
+    const { result, rerender } = renderHook(({ k }: { k: string | null }) => useDependants(g.naturalPerson.publicKey, g.id, k), { initialProps: { k: KEY as string | null } });
+    await waitFor(() => expect(result.current.loading).toBe(false));
+    let dep!: Awaited<ReturnType<typeof result.current.addDependant>>;
+    await act(async () => {
+      dep = await result.current.addDependant('Robin', undefined, { deviceDerive: async () => ({
+        naturalPerson: { publicKey: NP, privateKey: SECRET as never }, persona: { publicKey: PERSONA, privateKey: '' as const },
+      }) });
+    });
+    await waitFor(() => expect(result.current.dependants[0]?.naturalPerson.privateKey).toBe(SECRET));
+    // A setter from the unlocked render; the app locks before its write resolves.
+    const stale = result.current.updateAutonomyStage;
+    rerender({ k: null });
+    await waitFor(() => expect(result.current.loadedWithKey).toBe(false));
+    expect(result.current.dependants[0]?.naturalPerson.privateKey).not.toBe(SECRET);
+    await act(async () => { await stale(dep.id, 'request-approve'); });
+    expect(JSON.stringify(result.current.dependants)).not.toContain(SECRET);
+  });
+
   it('clearing a slot that names nothing is a no-op success', async () => {
     const { result, dep } = await setup();
     let out!: Awaited<ReturnType<typeof result.current.setDependantPersonaBackdrop>>;

@@ -191,7 +191,10 @@ export function useDependants(
       return;
     }
     const results = await getDependants(guardianPubkey, encryptionKey ?? undefined);
-    setDependants(migrateAndSort(results));
+    // A read made under a key that is no longer the live one (a lock, or another
+    // unlock, landed while it ran) must not reach state: the lock effect owns it
+    // now, and a late write's reload would put decrypted records back while locked.
+    if (liveKeyRef.current === (encryptionKey ?? null)) setDependants(migrateAndSort(results));
     setLoading(false);
     // Only the newest read speaks for the key: an older one finishing late must not.
     if (seq === loadSeqRef.current) setLoadedWithKey(!!encryptionKey);
