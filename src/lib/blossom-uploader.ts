@@ -8,7 +8,7 @@
  *
  * - a per-blob key from an HMAC over this install's private uploader secret
  *   (`hmacUploaderBackend`), for the public picture/banner, the private
- *   avatar, the #242 contact-share avatar and the venue photo. Their content
+ *   avatar, the guardian-set card backdrop, the #242 contact-share avatar and the venue photo. Their content
  *   keys are handed to other people (contact QRs, Kinterest, the venue QR), so
  *   an uploader key derived from one would let any holder sign a DELETE. The
  *   secret never leaves this device, so only this install can rebuild the key
@@ -45,6 +45,12 @@ function mint(backend: LocalSigningBackend): UploaderBackend {
 
 /** The private avatar's uploader (`uploadAvatar`). */
 export const AVATAR_UPLOADER_DOMAIN = 'signet:avatar-uploader:v1';
+/**
+ * The guardian-set card backdrop's uploader (`uploadBackdrop`). Its own domain,
+ * never one derived from the blob's content key: that key is handed to the
+ * child's phone, so a key-derived uploader would let the child delete it.
+ */
+export const BACKDROP_UPLOADER_DOMAIN = 'signet:backdrop-uploader:v1';
 /** The #242 contact-share avatar's uploader (stable per-slot `contactAvatarKey`). */
 export const CONTACT_AVATAR_UPLOADER_DOMAIN = 'signet:contact-avatar-uploader:v1';
 /** The contact-picture backup's uploader (derived from its content key). Unchanged: existing uploads may need a delete signed by it. */

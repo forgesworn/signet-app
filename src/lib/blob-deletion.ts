@@ -19,7 +19,7 @@
  */
 
 import {
-  hmacUploaderBackend, AVATAR_UPLOADER_DOMAIN, CONTACT_AVATAR_UPLOADER_DOMAIN, type UploaderBackend,
+  hmacUploaderBackend, AVATAR_UPLOADER_DOMAIN, BACKDROP_UPLOADER_DOMAIN, CONTACT_AVATAR_UPLOADER_DOMAIN, type UploaderBackend,
 } from './blossom-uploader';
 import { deleteFromBlossom, BlossomDeleteError } from './blossom';
 import { listIdentityStoreRows } from './db';
@@ -34,7 +34,7 @@ export type DeleteOutcome = 'deleted' | 'failed' | 'kept';
 const HEX64 = /^[0-9a-f]{64}$/;
 
 /** Every slot field that names a Blossom blob by hash. */
-const SLOT_HASH_FIELDS = ['pictureBlossomHash', 'bannerBlossomHash', 'avatarHash', 'contactAvatarHash'] as const;
+const SLOT_HASH_FIELDS = ['pictureBlossomHash', 'bannerBlossomHash', 'avatarHash', 'contactAvatarHash', 'backdropHash'] as const;
 
 function isRecord(v: unknown): v is Record<string, unknown> {
   return typeof v === 'object' && v !== null;
@@ -169,10 +169,11 @@ export function blobDeletionNote(kind: 'photo' | 'picture', outcome: DeleteOutco
   return withBlobHost(template, server);
 }
 
-/** The Blossom blobs one slot points at (private avatar, then the #242 share copy). */
+/** The Blossom blobs one slot points at (private avatar, the #242 share copy, the guardian-set card backdrop). */
 export interface SlotBlobs {
   avatar?: { hash: string; server: string };
   share?: { hash: string; server: string };
+  backdrop?: { hash: string; server: string };
 }
 
 /**
@@ -193,7 +194,11 @@ export function findSlotBlobs(
     typeof hash === 'string' && HEX64.test(hash.toLowerCase()) && typeof server === 'string' && server
       ? { hash: hash.toLowerCase(), server }
       : undefined;
-  return { avatar: pair(slot.avatarHash, slot.avatarBlossomUrl), share: pair(slot.contactAvatarHash, slot.contactAvatarBlossomUrl) };
+  return {
+    avatar: pair(slot.avatarHash, slot.avatarBlossomUrl),
+    share: pair(slot.contactAvatarHash, slot.contactAvatarBlossomUrl),
+    backdrop: pair(slot.backdropHash, slot.backdropBlossomUrl),
+  };
 }
 
 /** Deletes one blob under an uploader domain (the App binds the unlock key). */
@@ -224,4 +229,21 @@ export async function deleteStoppedShareCopy(
 ): Promise<string | undefined> {
   if (!share) return undefined;
   return blobDeletionNote('photo', await del(CONTACT_AVATAR_UPLOADER_DOMAIN, share.hash, share.server), share.server);
+}
+
+/**
+ * Delete the guardian-set card backdrop a replace or remove just superseded,
+ * once nothing points at it (R1 is enforced by the deleter: it reads the stored
+ * rows, so the caller must have saved the new slot fields first). Signed by the
+ * backdrop-domain HMAC uploader. A re-pick of identical bytes (same hash)
+ * deletes nothing. Silent: the outcome is for tests and diagnostics, because a
+ * backdrop is not a user-visible "photo" the way an avatar is.
+ */
+export async function deleteReplacedBackdrop(
+  old: { hash: string; server: string } | undefined,
+  newHash: string | undefined,
+  del: BlobDeleter,
+): Promise<DeleteOutcome | undefined> {
+  if (!old || old.hash === newHash?.toLowerCase()) return undefined;
+  return del(BACKDROP_UPLOADER_DOMAIN, old.hash, old.server);
 }
