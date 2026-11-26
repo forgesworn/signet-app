@@ -230,6 +230,26 @@ export interface DependantSlotsView extends Pick<DependantIdentity, 'hiddenOnPai
 }
 
 /**
+ * Whether the publisher sends the slot `target` (key `pubkey`) of `dep` to the
+ * paired phone, whether or not a phone is paired: `pairedDeviceAllows` (not
+ * removed from the phone, not hidden from it, not soft-deleted), and a
+ * real-name slot only while it is active. The inventory publisher's own rule;
+ * a slot this says no to never reaches the child, so a backdrop sent for it
+ * is cleared (`useDependants`).
+ */
+export function dependantSlotVisible(
+  dep: Pick<DependantSlotsView, 'hiddenOnPairedDeviceKeys' | 'childDevice' | 'naturalPersonActive' | 'naturalPerson' | 'persona'>,
+  target: string,
+  pubkey: string,
+  softDeleted: boolean,
+): boolean {
+  const allows = pairedDeviceAllows(dep);
+  return target === 'natural-person'
+    ? isDependantNaturalPersonActive(dep) && allows(pubkey)
+    : allows(pubkey, softDeleted);
+}
+
+/**
  * Which card pubkeys are a guardian's dependant slots, and how to send a
  * backdrop for each. Resolves by slot pubkey across every dependant (not by
  * carousel row type), so a dependant card on the guardian's home ring and the
@@ -260,10 +280,7 @@ export function buildDependantBackdropLookup(env: BackdropLinkEnv): (pubkey: str
       }
       if (target === null || !slot) continue;
       // Only for the matched dependant, so an unrelated record can never throw here.
-      const allows = pairedDeviceAllows(dep);
-      const visible = target === 'natural-person'
-        ? isDependantNaturalPersonActive(dep) && allows(pubkey)
-        : allows(pubkey, softDeleted);
+      const visible = dependantSlotVisible(dep, target, pubkey, softDeleted);
       // No phone paired: the inventory goes to nobody, so there is nothing to
       // send to and the backdrop stays device-local ("Only on this device").
       const canSend = !!dep.bunkerEndpoint?.authorizedClientPubkey && visible;

@@ -279,3 +279,129 @@ describe('unpair: sent backdrops', () => {
     expect((await stored(s.g)).updatedAt).toBe(before.updatedAt);
   }, 60_000);
 });
+
+describe('hide / remove from the phone: that slot\'s sent backdrop', () => {
+  beforeEach(async () => { await purgeAllUserData(); });
+
+  async function ownRows(): Promise<string[]> {
+    const raw = await openDB('my-signet');
+    try { return (await raw.getAllKeys('preferences')).filter((k): k is string => typeof k === 'string' && k.startsWith('backdrop:')).sort(); }
+    finally { raw.close(); }
+  }
+  const NO_BD = { backdropHash: undefined, backdropBlossomUrl: undefined, backdropKey: undefined, backdropUpdatedAt: undefined, backdropSentDigest: undefined };
+
+  async function withOwnRows(del: (...c: Call) => Promise<DeleteOutcome>) {
+    const s = await setup(del);
+    for (const pk of [PERSONA, EXTRA, NP]) await setCardBackdrop(pk, new Blob(['x'], { type: 'image/jpeg' }));
+    return s;
+  }
+
+  it('updatePersonaVisibility(false) clears only that slot, bumps its sends and deletes only its blob; the card keeps its picture', async () => {
+    const calls: Call[] = [];
+    const del = vi.fn(async (...c: Call): Promise<DeleteOutcome> => { calls.push(c); return 'deleted'; });
+    const s = await withOwnRows(del);
+    const { backdropSlotState } = await import('../lib/backdrop-send');
+    const before = backdropSlotState(`${s.dep.id}:${EXTRA}`).generation;
+    await act(async () => { await s.hook.result.current.updatePersonaVisibility(s.dep.id, EXTRA, false); });
+    await waitFor(() => expect(calls.length).toBe(1));
+    expect(calls[0]).toEqual([BACKDROP_UPLOADER_DOMAIN, h('7'), SERVER]);
+    expect(backdropSlotState(`${s.dep.id}:${EXTRA}`).generation).toBeGreaterThan(before);
+    const rec = await stored(s.g);
+    expect(rec.hiddenOnPairedDeviceKeys).toEqual([EXTRA]);
+    expect(rec.extraPersonas![0]).toMatchObject(NO_BD);
+    expect(rec.extraPersonas![0].avatarHash).toBe(h('6'));
+    expect(rec.persona.backdropHash).toBe(h('5'));
+    expect(rec.naturalPerson.backdropHash).toBe(h('9'));
+    expect(await ownRows()).toEqual([`backdrop:${NP}`, `backdrop:${PERSONA}`, `backdrop:${EXTRA}`].sort());
+    // Shown again: nothing more is cleared or deleted (the backfill resends it).
+    await act(async () => { await s.hook.result.current.updatePersonaVisibility(s.dep.id, EXTRA, true); });
+    expect(del).toHaveBeenCalledTimes(1);
+    expect((await stored(s.g)).hiddenOnPairedDeviceKeys).toEqual([]);
+  }, 60_000);
+
+  it('hiding the built-in persona clears the persona slot', async () => {
+    const calls: Call[] = [];
+    const s = await withOwnRows(vi.fn(async (...c: Call): Promise<DeleteOutcome> => { calls.push(c); return 'deleted'; }));
+    await act(async () => { await s.hook.result.current.updatePersonaVisibility(s.dep.id, PERSONA, false); });
+    await waitFor(() => expect(calls.map(c => c[1])).toEqual([h('5')]));
+    const rec = await stored(s.g);
+    expect(rec.persona).toMatchObject(NO_BD);
+    expect(rec.persona.avatarHash).toBe(h('4'));
+    expect(rec.extraPersonas![0].backdropHash).toBe(h('7'));
+  }, 60_000);
+
+  it('setDepExtraPersonaHidden(true) (soft delete) clears that extra; un-hiding clears nothing', async () => {
+    const calls: Call[] = [];
+    const s = await withOwnRows(vi.fn(async (...c: Call): Promise<DeleteOutcome> => { calls.push(c); return 'deleted'; }));
+    await act(async () => { await s.hook.result.current.setDepExtraPersonaHidden(s.dep.id, EXTRA, true); });
+    await waitFor(() => expect(calls.map(c => c[1])).toEqual([h('7')]));
+    expect((await stored(s.g)).extraPersonas![0]).toMatchObject({ ...NO_BD, hidden: true, avatarHash: h('6') });
+    await act(async () => { await s.hook.result.current.setDepExtraPersonaHidden(s.dep.id, EXTRA, false); });
+    expect(calls).toHaveLength(1);
+  }, 60_000);
+
+  it('removeChildDevicePersona lists it as removed and clears that slot only', async () => {
+    const calls: Call[] = [];
+    const s = await withOwnRows(vi.fn(async (...c: Call): Promise<DeleteOutcome> => { calls.push(c); return 'deleted'; }));
+    await act(async () => {
+      await s.hook.result.current.mutateDependantRecord(s.dep.id, KEY, d => d && ({
+        ...d, childDevice: { mode: 'heartwood-direct', slotLabel: 'l', secretFingerprint: 'f', slotIndex: 1, clientPubkey: 'c'.repeat(64), boundPersona: PERSONA, pairedAt: 1 },
+      }));
+    });
+    let ok = false;
+    await act(async () => { ok = await s.hook.result.current.removeChildDevicePersona(s.dep.id, EXTRA.toUpperCase(), KEY); });
+    expect(ok).toBe(true);
+    await waitFor(() => expect(calls.map(c => c[1])).toEqual([h('7')]));
+    const rec = await stored(s.g);
+    expect(rec.childDevice?.removedPersonas).toEqual([EXTRA]);
+    expect(rec.extraPersonas![0]).toMatchObject(NO_BD);
+    expect(rec.persona.backdropHash).toBe(h('5'));
+    expect(await ownRows()).toHaveLength(3);
+  }, 60_000);
+
+  it('removeChildDevicePersona without a child device writes nothing', async () => {
+    const del = vi.fn(async (): Promise<DeleteOutcome> => 'deleted');
+    const s = await withOwnRows(del);
+    let ok = true;
+    await act(async () => { ok = await s.hook.result.current.removeChildDevicePersona(s.dep.id, EXTRA, KEY); });
+    expect(ok).toBe(false);
+    expect(del).not.toHaveBeenCalled();
+    expect((await stored(s.g)).extraPersonas![0].backdropHash).toBe(h('7'));
+  }, 60_000);
+
+  it('a send still uploading when the slot is hidden saves no pointer', async () => {
+    const del = vi.fn(async (): Promise<DeleteOutcome> => 'deleted');
+    const s = await withOwnRows(del);
+    let release!: () => void;
+    const gate = new Promise<void>(r => { release = r; });
+    const { sendBackdropToChild } = await import('../lib/backdrop-send');
+    const sending = sendBackdropToChild(new Blob(['pic']), {
+      slotKey: `${s.dep.id}:${EXTRA}`, encryptionKey: KEY, getKey: () => KEY, blossomUrl: SERVER, blossomConsent: true,
+      upload: async () => { await gate; return { hash: h('a'), blossomUrl: SERVER, keyHex: h('a'), updatedAt: 1 }; },
+      saveSlot: (meta, digest) => s.hook.result.current.setDependantPersonaBackdrop(s.dep.id, EXTRA, meta ? { ...meta, sentDigest: digest } : null),
+      deleteBlob: del,
+    });
+    await act(async () => { await s.hook.result.current.updatePersonaVisibility(s.dep.id, EXTRA, false); });
+    release();
+    expect((await sending).ok).toBe(false);
+    expect((await stored(s.g)).extraPersonas![0].backdropHash).toBeUndefined();
+  }, 60_000);
+  it('a FIRST send still uploading (nothing sent yet) when the slot is hidden saves no pointer either', async () => {
+    const del = vi.fn(async (): Promise<DeleteOutcome> => 'deleted');
+    const s = await withOwnRows(del);
+    await act(async () => { await s.hook.result.current.setDependantPersonaBackdrop(s.dep.id, EXTRA, null); });
+    let release!: () => void;
+    const gate = new Promise<void>(r => { release = r; });
+    const { sendBackdropToChild } = await import('../lib/backdrop-send');
+    const sending = sendBackdropToChild(new Blob(['pic']), {
+      slotKey: `${s.dep.id}:${EXTRA}`, encryptionKey: KEY, getKey: () => KEY, blossomUrl: SERVER, blossomConsent: true,
+      upload: async () => { await gate; return { hash: h('b'), blossomUrl: SERVER, keyHex: h('b'), updatedAt: 1 }; },
+      saveSlot: (meta, digest) => s.hook.result.current.setDependantPersonaBackdrop(s.dep.id, EXTRA, meta ? { ...meta, sentDigest: digest } : null),
+      deleteBlob: del,
+    });
+    await act(async () => { await s.hook.result.current.updatePersonaVisibility(s.dep.id, EXTRA, false); });
+    release();
+    expect((await sending).ok).toBe(false);
+    expect((await stored(s.g)).extraPersonas![0].backdropHash).toBeUndefined();
+  }, 60_000);
+});

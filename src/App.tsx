@@ -935,7 +935,7 @@ function AppContent() {
   // Always use NP pubkey for dependant lookup — dependants are stored with guardianPubkey
   // as the NP key, so switching to persona must not lose sight of them.
   const guardianNpPubkey = identity?.naturalPerson.publicKey;
-  const { dependants, loading: dependantsLoading, loadedWithKey: dependantsLoadedWithKey, addDependant, importDependant, removeDependant: removeDependantRecord, updateAutonomyStage, updateAuditVisibility, updatePetitionOnDeny, updateDependantName, updateDependantPhoto, switchDependantPrimary, updateDependantPersonaName, activateDependantNaturalPerson, addDependantPersona, updatePersonaVisibility, removeDependantExtraPersona, reorderDependants, ensureDependantBunkerEndpoint, clearDependantBunkerEndpoint, saveDependantPairingSecret, bindDependantBunkerClient, setDependantPersonaAvatar, clearDependantPersonaAvatar, setDependantPersonaContactAvatar, clearDependantPersonaContactAvatar, setDependantPersonaBackdrop, setDependantPersonaPublicProfile, clearDependantPersonaPublicProfile, setDependantSlotNip05Check, setDepExtraPersonaHidden, reload: reloadDependants, loadFreshDependants, mutateDependantRecord, clearDependantBackdrops } = useDependants(
+  const { dependants, loading: dependantsLoading, loadedWithKey: dependantsLoadedWithKey, addDependant, importDependant, removeDependant: removeDependantRecord, updateAutonomyStage, updateAuditVisibility, updatePetitionOnDeny, updateDependantName, updateDependantPhoto, switchDependantPrimary, updateDependantPersonaName, activateDependantNaturalPerson, addDependantPersona, updatePersonaVisibility, removeDependantExtraPersona, removeChildDevicePersona, reorderDependants, ensureDependantBunkerEndpoint, clearDependantBunkerEndpoint, saveDependantPairingSecret, bindDependantBunkerClient, setDependantPersonaAvatar, clearDependantPersonaAvatar, setDependantPersonaContactAvatar, clearDependantPersonaContactAvatar, setDependantPersonaBackdrop, setDependantPersonaPublicProfile, clearDependantPersonaPublicProfile, setDependantSlotNip05Check, setDepExtraPersonaHidden, reload: reloadDependants, loadFreshDependants, mutateDependantRecord, clearDependantBackdrops } = useDependants(
     guardianNpPubkey, identity?.id, encryptionKey,
     // `deleteOwnBlob` is declared just below; it only runs when a removal or an unpair fires.
     { deleteBlob: (domain, hash, server) => deleteOwnBlob(domain, hash, server) },
@@ -15659,12 +15659,8 @@ function AppContent() {
               // A51: the phone stops offering it too — the rules payload's `personas` drops it.
               const key = encryptionKey || await requestAuth({ purpose: 'manage-dependant', action: 'permissions', depName: dep.displayName });
               if (!key) throw new Error('Authentication required');
-              const saved = await mutateDependantRecord(dep.id, key, fresh => {
-                if (!fresh?.childDevice) return null;
-                const removed = [...new Set([...(fresh.childDevice.removedPersonas ?? []), persona.toLowerCase()])];
-                return { ...fresh, childDevice: { ...fresh.childDevice, removedPersonas: removed } };
-              });
-              if (saved) await reloadDependants();
+              // The backdrop sent for it is cleared and its blob deleted; the card keeps it.
+              if (await removeChildDevicePersona(dep.id, persona, key)) await reloadDependants();
             }}
             onOpenStage={() => openPersonaAdvanced({ slotTarget: resolveDependantCardSlot(dep).slotTarget, depPubkey: dep.id })}
             onUnpaired={() => navigateBack()}

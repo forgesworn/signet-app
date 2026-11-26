@@ -1,6 +1,6 @@
 import { describe, it, expect, vi } from 'vitest';
 import { runBackdropBackfill } from './backdrop-backfill';
-import { buildDependantBackdropLookup, removeBackdropFromChild, sendBackdropToChild, type BackdropLinkEnv } from './backdrop-send';
+import { buildDependantBackdropLookup, removeBackdropFromChild, sendBackdropToChild, supersedeBackdropSends, type BackdropLinkEnv } from './backdrop-send';
 import { backdropDigest } from './backdrop-digest';
 import { BACKDROP_COPY } from './child-device-copy';
 
@@ -28,14 +28,14 @@ function setupEnv(over: { dep?: Record<string, unknown>; env?: Partial<BackdropL
     ...over.env,
   };
   const locals = new Map(Object.entries(over.locals ?? { [id]: pic('persona-pic') }));
-  const run = (extra: { attempted?: Set<string>; isLive?: () => boolean; readLocal?: (pk: string) => Promise<Blob | null> } = {}) => {
+  const run = (extra: { attempted?: Map<string, number>; isLive?: () => boolean; readLocal?: (pk: string) => Promise<Blob | null> } = {}) => {
     const lookup = buildDependantBackdropLookup(env);
     return runBackdropBackfill({
       slotPubkeys: () => [id, NP, EXTRA],
       lookup: () => lookup,
       readLocal: extra.readLocal ?? (async pk => locals.get(pk) ?? null),
       digest: backdropDigest,
-      attempted: extra.attempted ?? new Set(),
+      attempted: extra.attempted ?? new Map(),
       isLive: extra.isLive ?? (() => true),
     });
   };
@@ -45,7 +45,7 @@ function setupEnv(over: { dep?: Record<string, unknown>; env?: Partial<BackdropL
 describe('runBackdropBackfill', () => {
   it('sends an unsent slot once per unlock, and not again for the same picture', async () => {
     const s = setupEnv();
-    const attempted = new Set<string>();
+    const attempted = new Map<string, number>();
     expect(await s.run({ attempted })).toBe(1);
     expect(s.uploads).toEqual(['persona-pic']);
     expect(s.saves).toEqual([{ target: 'persona', hash: META('1').hash }]);
@@ -56,7 +56,7 @@ describe('runBackdropBackfill', () => {
 
   it('after an unpair and a re-pair in the same unlock the new phone gets the picture again', async () => {
     const s = setupEnv();
-    const attempted = new Set<string>();
+    const attempted = new Map<string, number>();
     expect(await s.run({ attempted })).toBe(1);
     // Unpaired: the pointer was cleared and the phone is gone; nothing is sent meanwhile.
     s.dep.bunkerEndpoint = undefined as never;
@@ -67,9 +67,39 @@ describe('runBackdropBackfill', () => {
     expect(s.uploads).toEqual(['persona-pic', 'persona-pic']);
   });
 
+  it('hidden from the phone (sent copy cleared) and shown again in the same unlock: sent again, once', async () => {
+    const s = setupEnv();
+    const attempted = new Map<string, number>();
+    expect(await s.run({ attempted })).toBe(1);
+    // The send saved: the reloaded slot records it.
+    const digest = await backdropDigest(pic('persona-pic'));
+    const sentSlot = { publicKey: s.id, backdropHash: '1'.repeat(64), backdropKey: '1'.repeat(64), backdropBlossomUrl: SERVER, backdropSentDigest: digest };
+    s.dep.persona = sentSlot;
+    expect(await s.run({ attempted })).toBe(0);
+    // Hidden: the hide clears the sent pointer and bumps the slot (useDependants).
+    (s.dep as Record<string, unknown>).hiddenOnPairedDeviceKeys = [s.id];
+    s.dep.persona = { publicKey: s.id } as never;
+    supersedeBackdropSends(s.id, ['persona']);
+    expect(await s.run({ attempted })).toBe(0);
+    // Shown again: the slot reads unsent, so it goes again.
+    (s.dep as Record<string, unknown>).hiddenOnPairedDeviceKeys = [];
+    expect(await s.run({ attempted })).toBe(1);
+    // And not a third time from the still-stale snapshot.
+    expect(await s.run({ attempted })).toBe(0);
+    expect(s.uploads).toEqual(['persona-pic', 'persona-pic']);
+  });
+
+  it('a failed send is not retried in the same unlock while nothing else touches the slot', async () => {
+    const s = setupEnv({ env: { upload: vi.fn(async () => { throw new Error('refused'); }) } });
+    const attempted = new Map<string, number>();
+    expect(await s.run({ attempted })).toBe(1);
+    expect(await s.run({ attempted })).toBe(0);
+    expect(await s.run({ attempted })).toBe(0);
+  });
+
   it('a different picture on the same slot is a new attempt', async () => {
     const s = setupEnv();
-    const attempted = new Set<string>();
+    const attempted = new Map<string, number>();
     await s.run({ attempted });
     s.locals.set(s.id, pic('new-pic'));
     await s.run({ attempted });
