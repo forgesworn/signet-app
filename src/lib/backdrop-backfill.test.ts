@@ -224,6 +224,27 @@ describe('runBackdropBackfill', () => {
     await vi.waitFor(() => expect(deleted).toContain(META('1').hash));
   });
 
+  it('hidden while the backfill is uploading, then shown again in the same unlock: sent again', async () => {
+    const s = setupEnv();
+    const attempted = new Map<string, number>();
+    let release!: () => void;
+    const gate = new Promise<void>(r => { release = r; });
+    let n = 0;
+    s.env.upload = vi.fn(async (blob: Blob) => { s.uploads.push(await blob.text()); if (++n === 1) await gate; return META('1'); });
+    const first = s.run({ attempted });
+    await vi.waitFor(() => expect(s.env.upload).toHaveBeenCalled());
+    // Hidden mid-upload: the hide bumps the slot, so the upload is discarded.
+    (s.dep as Record<string, unknown>).hiddenOnPairedDeviceKeys = [s.id];
+    supersedeBackdropSends(s.id, ['persona']);
+    release();
+    await first;
+    expect(s.saves).toEqual([]);
+    // Shown again: nothing bumps, but the discarded attempt must not count as tried.
+    (s.dep as Record<string, unknown>).hiddenOnPairedDeviceKeys = [];
+    expect(await s.run({ attempted })).toBe(1);
+    expect(s.saves).toEqual([{ target: 'persona', hash: META('1').hash }]);
+  });
+
   it('reports a superseded backfill with the superseded reason', async () => {
     const s = setupEnv();
     const link = buildDependantBackdropLookup(s.env)(s.id)!;

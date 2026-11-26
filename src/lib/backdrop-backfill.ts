@@ -25,6 +25,7 @@
  */
 
 import { backdropSlotState } from './backdrop-send';
+import { BACKDROP_COPY } from './child-device-copy';
 import type { DependantBackdropLookup } from './backdrop-send-context';
 
 export interface BackfillDeps {
@@ -70,10 +71,17 @@ export async function runBackdropBackfill(deps: BackfillDeps): Promise<number> {
       // started meanwhile skips it; replaced by the one after it once it settles.
       deps.attempted.set(memo, state.generation);
       started += 1;
+      let superseded = false;
       try {
-        await link.send(blob, { backfill: { generation: state.generation } });
+        const result = await link.send(blob, { backfill: { generation: state.generation } });
+        superseded = !result.ok && result.reason === BACKDROP_COPY.reasons.superseded;
       } finally {
-        deps.attempted.set(memo, backdropSlotState(link.slotKey).generation);
+        // A send a user action outranked saved nothing, so it is not an attempt:
+        // keeping the memo would hold the slot back after e.g. a hide mid-upload
+        // and a show (which bumps nothing) until the next unlock. A thrown or
+        // failed send still remembers the generation, so nothing retries in a loop.
+        if (superseded) deps.attempted.delete(memo);
+        else deps.attempted.set(memo, backdropSlotState(link.slotKey).generation);
       }
     } catch {
       // Silent: the card's retry button is still there.
