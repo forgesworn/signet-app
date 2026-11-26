@@ -750,7 +750,9 @@ function AppContent() {
   // `no-store`, so each update() reliably picks up the new worker.
   const { needRefresh, updateServiceWorker } = useSwUpdate();
 
-  const { identity, loading: identityLoading, create, restore, restoreWithProfile, importNsec, importLiteMnemonic, addImportedPersona, addImportedPersonas, addHeartwoodKeyPersona, markBackedUp, switchPrimary, activateNaturalPerson, updatePhoto, updateDisplayName: updateDisplayNameRaw, addPersona: addPersonaRaw, setExtraPersonaHidden, removeExtraPersona, reorderExtraPersonas, applyRemotePersonas, setPersonaAvatar, clearPersonaAvatar, setPersonaContactAvatar, clearPersonaContactAvatar, setPersonaPublicProfile, clearPersonaPublicProfile, setSlotNip05Check, setSlotFollowsImport, reload: reloadIdentity } = useIdentity(encryptionKey);
+  const { identity, loading: identityLoading, create, restore, restoreWithProfile, importNsec, importLiteMnemonic, addImportedPersona, addImportedPersonas, addHeartwoodKeyPersona, markBackedUp, switchPrimary, activateNaturalPerson, updatePhoto, updateDisplayName: updateDisplayNameRaw, addPersona: addPersonaRaw, setExtraPersonaHidden, removeExtraPersona, reorderExtraPersonas, applyRemotePersonas, setPersonaAvatar, clearPersonaAvatar, setPersonaContactAvatar, clearPersonaContactAvatar, setPersonaPublicProfile, clearPersonaPublicProfile, setSlotNip05Check, setSlotFollowsImport, reload: reloadIdentity } = useIdentity(encryptionKey,
+    // `deleteOwnBlob` is declared further down; it only runs when a persona is deleted.
+    { deleteBlob: (domain, hash, server) => deleteOwnBlob(domain, hash, server) });
   const activePubkey = identity ? getActivePubkey(identity) : undefined;
   const npActive = identity ? isNaturalPersonActive(identity) : false;
   // Session-level hide for the Android app promo. Snooze persistence lives in
@@ -13736,7 +13738,9 @@ function AppContent() {
           if (depPubkey) {
             await removeDependantExtraPersona(depPubkey, pubkey);
           } else {
-            await removeExtraPersona(pubkey);
+            // Its avatar and backdrop blobs go once the slot is gone (best
+            // effort, never awaited here: it cannot hold or fail the delete).
+            void (await removeExtraPersona(pubkey)).deletion;
           }
           // Its device-local card backdrop goes with it.
           await forgetCardBackdrop(pubkey);

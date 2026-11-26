@@ -12,6 +12,7 @@ import { applyRemotePersonasPatch } from '../lib/apply-remote-personas';
 import { sanitizeDisplayName } from '../lib/text-sanitize';
 import type { Nip05CheckResult } from '../lib/nip05-check';
 import { resolvePublicProfileBase } from '../lib/public-profile-base';
+import { collectSlotBlobsToDelete, deleteRemovedBlobs, type BlobDeleter, type SlotBlobToDelete } from '../lib/blob-deletion';
 
 /**
  * Derive the Professional Persona keypair from the identity's mnemonic and
@@ -33,7 +34,16 @@ export async function deriveAndStoreProPersona(
   return keypair;
 }
 
-export function useIdentity(encryptionKey?: string | null) {
+export function useIdentity(
+  encryptionKey?: string | null,
+  options?: {
+    /**
+     * Deletes one of this install's Blossom blobs (App's `deleteOwnBlob`: R1
+     * is enforced there). Without it, deleting a persona leaves its blobs alone.
+     */
+    deleteBlob?: BlobDeleter;
+  },
+) {
   const [identities, setIdentities] = useState<SignetIdentity[]>([]);
   const [activeIdentity, setActiveIdentity] = useState<SignetIdentity | null>(null);
   // Start loading as true and only flip to false after the first DB read completes.
@@ -45,6 +55,8 @@ export function useIdentity(encryptionKey?: string | null) {
   // records or reload them into state after a lock cleared them.
   const liveKeyRef = useRef(encryptionKey);
   useEffect(() => { liveKeyRef.current = encryptionKey; }, [encryptionKey]);
+  const deleteBlobRef = useRef(options?.deleteBlob);
+  deleteBlobRef.current = options?.deleteBlob;
 
   const loadAll = useCallback(async () => {
     const raw = await db.getAllIdentities();
@@ -1137,12 +1149,16 @@ export function useIdentity(encryptionKey?: string | null) {
    * a later addPersona. The user is still pushed toward Hide in the UI;
    * Delete is the explicit power-user path.
    */
-  const removeExtraPersona = useCallback(async (publicKey: string) => {
-    if (!activeIdentity) return;
+  const removeExtraPersona = useCallback(async (publicKey: string): Promise<{ deletion: Promise<void> }> => {
+    if (!activeIdentity) return { deletion: Promise.resolve() };
     if (!encryptionKey) throw new Error('Cannot save identity without encryption key');
     const decrypted = await db.loadIdentityDecrypted(activeIdentity.id, encryptionKey);
     if (!decrypted) throw new Error('Could not decrypt identity — wrong key?');
     const removedPersona = (decrypted.extraPersonas ?? []).find(p => p.publicKey === publicKey);
+    // Its in-app avatar and card backdrop, read from the stored record before
+    // the slot goes. Never the #242 share copy (only Stop sharing deletes it)
+    // and never the public picture or banner (their own rules apply).
+    const blobs: SlotBlobToDelete[] = removedPersona ? collectSlotBlobsToDelete(decrypted, ['avatar', 'backdrop'], [publicKey]) : [];
     const extras = (decrypted.extraPersonas ?? []).filter(p => p.publicKey !== publicKey);
     let tombstones = decrypted.extraPersonaTombstones ?? [];
     // Only derived extras (persona-N, never imported) get a tombstone — an
@@ -1157,7 +1173,16 @@ export function useIdentity(encryptionKey?: string | null) {
     }
     const updated: SignetIdentity = { ...decrypted, extraPersonas: extras, extraPersonaTombstones: tombstones };
     await db.saveIdentityEncrypted(updated, encryptionKey);
+    // The slot is gone from the stored record, so the deleter's R1 check (it
+    // reads the stored rows) no longer sees it; a blob another slot still
+    // shows is kept. Started, not awaited: a slow server never holds the
+    // delete. Locked or unreachable: recorded as an orphan for the sweep.
+    const deleteBlob = deleteBlobRef.current;
+    const deletion = blobs.length > 0 && deleteBlob
+      ? deleteRemovedBlobs(blobs, { deleteBlob, isLive: () => !!liveKeyRef.current })
+      : Promise.resolve();
     await loadAll();
+    return { deletion };
   }, [activeIdentity, loadAll, encryptionKey]);
 
   /**
