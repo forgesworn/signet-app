@@ -654,3 +654,37 @@ describe('useIdentity — publicProfileBase (device-local kind-0 comparison base
     expect(result.current.identity?.persona.publicProfile).toBeUndefined();
   }, 60_000);
 });
+
+describe('useIdentity.setPersonaAvatar (gap 6)', () => {
+  const KEY = 'k'.repeat(64);
+  const av = (n: string) => ({ hash: n.repeat(64), blossomUrl: 'https://nostr.download', keyHex: n.repeat(64), updatedAt: 3 });
+
+  it('reports the avatar it replaced, from the record being replaced', async () => {
+    await db.saveIdentityEncrypted(makeFakeIdentity({ naturalPerson: { publicKey: NP_PUBKEY, privateKey: '', displayName: 'Test User' }, persona: { publicKey: PERSONA_PUBKEY, privateKey: '', displayName: 'Anonymous' }, mnemonic: '' }), KEY);
+    const { result } = renderHook(() => useIdentity(KEY));
+    await waitFor(() => expect(result.current.identity).not.toBeNull());
+    let out!: { previous?: { hash: string; server: string } };
+    await act(async () => { out = await result.current.setPersonaAvatar('persona', av('1')); });
+    expect(out.previous).toBeUndefined();
+    await act(async () => { out = await result.current.setPersonaAvatar('persona', av('2')); });
+    expect(out.previous).toEqual({ hash: '1'.repeat(64), server: 'https://nostr.download' });
+    await act(async () => { out = await result.current.clearPersonaAvatar('persona'); });
+    expect(out.previous).toEqual({ hash: '2'.repeat(64), server: 'https://nostr.download' });
+    await act(async () => {
+      await expect(result.current.setPersonaAvatar('e'.repeat(64), av('3'))).rejects.toThrow('Persona not found');
+    });
+  });
+
+  it('a setter captured before a lock saves nothing once the key is gone', async () => {
+    await db.saveIdentityEncrypted(makeFakeIdentity({ naturalPerson: { publicKey: NP_PUBKEY, privateKey: '', displayName: 'Test User' }, persona: { publicKey: PERSONA_PUBKEY, privateKey: '', displayName: 'Anonymous' }, mnemonic: '' }), KEY);
+    const { result, rerender } = renderHook(({ k }: { k: string | null }) => useIdentity(k), { initialProps: { k: KEY as string | null } });
+    await waitFor(() => expect(result.current.identity).not.toBeNull());
+    const stale = result.current.setPersonaAvatar;
+    rerender({ k: null });
+    await act(async () => {
+      await expect(stale('persona', av('1'))).rejects.toThrow('encryption key');
+    });
+    const stored = await db.loadIdentityDecrypted(NP_PUBKEY, KEY);
+    expect(stored?.persona.avatarHash).toBeUndefined();
+  });
+});
