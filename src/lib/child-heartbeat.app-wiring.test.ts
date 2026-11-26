@@ -16,7 +16,9 @@ describe('child Heartwood heartbeat wiring in App.tsx', () => {
   });
 
   it('feeds the unpaired state into the signer line and wires Pair again to the repair page', () => {
-    expect(app).toMatch(/childSignerKind\(\{[^}]*unpaired: childDeviceLink\.unpaired[^}]*\}\)/);
+    expect(app).toMatch(/childSignerKind\(\{[^}]*unpaired: childUnpaired[^}]*\}\)/);
+    // Direct (childDeviceLink) or legacy (the guardian's unpaired notice).
+    expect(app).toContain('const childUnpaired = childDeviceLink.unpaired || legacyChildUnpaired;');
     expect(app).toContain("onPairAgain={() => navigateTo('paired-child-repair')}");
   });
 

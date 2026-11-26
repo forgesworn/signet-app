@@ -101,7 +101,8 @@ export const CHILD_CONNECT_STALL_MS = 60_000;
  * answers pings from an unpaired phone, so only the notice can tell.
  * A legacy phone-paired
  * child keeps the old rule (Heartwood only while a router answered the
- * capabilities probe).
+ * capabilities probe), except that an unlocked one the guardian has revoked
+ * (its unpaired notice, `useLegacyChildUnpaired`) says it is unpaired too.
  */
 export function childSignerKind(input: { signingMode: Mode; direct: boolean; routerUp: boolean; unlocked: boolean; stalled?: boolean; lost?: boolean; unpaired?: boolean }): ChildSignerKind {
   if (input.signingMode !== 'paired-child') return 'guardian-phone';
@@ -111,6 +112,7 @@ export function childSignerKind(input: { signingMode: Mode; direct: boolean; rou
     if (input.routerUp) return input.lost ? 'heartwood-unreachable' : 'heartwood';
     return input.stalled ? 'heartwood-unreachable' : 'heartwood-connecting';
   }
+  if (input.unlocked && input.unpaired) return 'unpaired';
   return input.routerUp ? 'heartwood' : 'guardian-phone';
 }
 

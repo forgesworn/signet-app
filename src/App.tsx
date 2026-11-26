@@ -414,6 +414,8 @@ import { useChildRulesSync } from './hooks/useChildRulesSync';
 import { useChildRulesPublisher } from './hooks/useChildRulesPublisher';
 import { useChildActivityPublisher } from './hooks/useChildActivityPublisher';
 import { buildUnpairedNotice } from './lib/child-activity';
+import { publishLegacyUnpairedNotice } from './lib/legacy-child-unpair';
+import { useLegacyChildUnpaired } from './hooks/useLegacyChildUnpaired';
 import { pendingRuleSeeds, phoneServedDependants, usesChildDirectPairing } from './lib/child-device-pairing';
 import { useChildAsks, type PendingChildAsk } from './hooks/useChildAsks';
 import { createSerialQueue } from './lib/contacts-v2-queue';
@@ -2450,12 +2452,21 @@ function AppContent() {
     withheldSlots: slotResolveOpts.withheld,
     onRecordUpdated: async (r) => { await setPairedChildIdentityApprovals(r.id, r.identityApprovals ?? {}, r.identityPressedAt ?? {}); },
   });
+  // A legacy phone-paired child learns of a Revoke from the guardian's
+  // unpaired notice (the direct reader is `childDeviceLink`). Either way the
+  // phone is "unpaired": banner, card notice with Pair again, no guardian backdrops.
+  const legacyChildUnpaired = useLegacyChildUnpaired({
+    record: preferences.signingMode === 'paired-child' ? pairedChildRecord : null,
+    encryptionKey,
+    relayUrl: preferences.relayUrl ?? DEFAULT_RELAY_URL,
+  });
+  const childUnpaired = childDeviceLink.unpaired || legacyChildUnpaired;
   // The guardian's card backdrops for this child's personas: fetched while
   // unlocked on a paired-child install, retried on every inventory apply. Not
   // once the guardian has unpaired this phone: `markUnpaired` just dropped the
   // rows, and the stored slots still name the (deleted) blobs.
   useGuardianBackdrops({
-    enabled: preferences.signingMode === 'paired-child' && !!encryptionKey && !childDeviceLink.unpaired,
+    enabled: preferences.signingMode === 'paired-child' && !!encryptionKey && !childUnpaired,
     encryptionKey,
     identity,
     mergeCount: inventoryMergeCount,
@@ -12309,9 +12320,9 @@ function AppContent() {
       />
     );
   };
-  const childApprovalsBanner = (childDeviceLink.unpaired || childReadyVisible || (childDirect && childTransportKeysUnreadable)) ? (
+  const childApprovalsBanner = (childUnpaired || childReadyVisible || (childDirect && childTransportKeysUnreadable)) ? (
     <>
-      {childDeviceLink.unpaired ? (
+      {childUnpaired ? (
         <div role="alert" style={{ background: 'var(--bg-secondary)', padding: '8px 16px', fontSize: 13, color: 'var(--text-secondary)', display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 12 }}>
           <span>{CHILD_SIDE_COPY.unpaired}</span>
           <button className="btn btn-secondary btn-sm" style={{ flexShrink: 0 }} onClick={() => navigateTo('paired-child-repair')}>{CHILD_SIDE_COPY.pairAgain}</button>
@@ -15582,6 +15593,16 @@ function AppContent() {
           clearDependantBunkerEndpoint={async (pubkey) => {
             const key = encryptionKey || await requestAuth({ purpose: 'manage-dependant', action: 'pair-device', depName: activeDependant.displayName });
             if (!key) throw new Error('Authentication required');
+            // Before the endpoint goes, tell the child's phone it was revoked:
+            // the unpaired notice, signed by the endpoint key, addressed to the
+            // phone's client key, on the inventory's relays. Best effort and
+            // capped at 5 s; offline or refused, the revoke still completes.
+            try {
+              const fresh = (await loadFreshDependants(key)).find(d => d.id === pubkey);
+              if (fresh?.bunkerEndpoint) {
+                await publishLegacyUnpairedNotice(fresh.bunkerEndpoint, guardianToChildRelays(fresh, [preferences.relayUrl ?? DEFAULT_RELAY_URL]));
+              }
+            } catch { /* best effort */ }
             return clearDependantBunkerEndpoint(pubkey, key);
           }}
           saveDependantPairingSecret={async (pubkey, secret) => {
@@ -16108,7 +16129,7 @@ function AppContent() {
         addPersonaHeartwoodHold={heartwoodHoldCount > 0}
         onAddDependant={() => navigateTo('add-dependant')}
         childDormant={preferences.signingMode === 'paired-child' && childIsDormant}
-        childSignerKind={childSignerKind({ signingMode: preferences.signingMode, direct: childDirect, routerUp: !!bunkerRouter, unlocked: !!encryptionKey, stalled: childConnectStalled, lost: childHeartwoodLost, unpaired: childDeviceLink.unpaired })}
+        childSignerKind={childSignerKind({ signingMode: preferences.signingMode, direct: childDirect, routerUp: !!bunkerRouter, unlocked: !!encryptionKey, stalled: childConnectStalled, lost: childHeartwoodLost, unpaired: childUnpaired })}
         onPairAgain={() => navigateTo('paired-child-repair')}
         cachedGuardianName={cachedGuardianName}
         dependantById={Object.fromEntries(dependants.map(d => [d.id, d]))}
