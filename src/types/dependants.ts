@@ -1,5 +1,5 @@
 import type { GrantSchedule } from '../lib/grant-schedule';
-import type { ExtraPersona, ExtraPersonaTombstone, SlotAvatarFields, SlotPublicationFields } from './identity';
+import type { ExtraPersona, ExtraPersonaTombstone, SlotAvatarFields, SlotBackdropFields, SlotPublicationFields } from './identity';
 
 /** Autonomy stage for a dependant's signing delegation */
 export type AutonomyStage = 'full-control' | 'request-approve' | 'autonomous-alerts' | 'autonomous-logging' | 'full-autonomy';
@@ -108,13 +108,13 @@ export interface DependantIdentity {
     publicKey: string;
     privateKey: string;
     displayName: string;
-  } & SlotAvatarFields & SlotPublicationFields;
+  } & SlotAvatarFields & SlotBackdropFields & SlotPublicationFields;
   /** Persona keypair */
   persona: {
     publicKey: string;
     privateKey: string;
     displayName: string;
-  } & SlotAvatarFields & SlotPublicationFields;
+  } & SlotAvatarFields & SlotBackdropFields & SlotPublicationFields;
   /** Additional personas */
   extraPersonas?: ExtraPersona[];
   /** Permanently reserved names of deleted derived personas; synced to other devices. */

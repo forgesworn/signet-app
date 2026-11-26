@@ -697,9 +697,9 @@ describe('dependantDisplayView: what is kept after a lock', () => {
   const SECRET = 's3cr3t-'.padEnd(64, 'x');
   const full = {
     ...mockDependant,
-    naturalPerson: { publicKey: 'dep-np', privateKey: SECRET + '1', displayName: 'Ben Smith', avatarKey: SECRET + '2', contactAvatarKey: SECRET + '3' },
-    persona: { publicKey: 'dep-p', privateKey: SECRET + '4', displayName: 'BenGamer', avatarKey: SECRET + '5' },
-    extraPersonas: [{ publicKey: 'dep-x', privateKey: SECRET + '6', displayName: 'Extra', avatarKey: SECRET + '7', contactAvatarKey: SECRET + '8' }],
+    naturalPerson: { publicKey: 'dep-np', privateKey: SECRET + '1', displayName: 'Ben Smith', avatarKey: SECRET + '2', contactAvatarKey: SECRET + '3', backdropKey: SECRET + 'd' },
+    persona: { publicKey: 'dep-p', privateKey: SECRET + '4', displayName: 'BenGamer', avatarKey: SECRET + '5', backdropKey: SECRET + 'e' },
+    extraPersonas: [{ publicKey: 'dep-x', privateKey: SECRET + '6', displayName: 'Extra', avatarKey: SECRET + '7', contactAvatarKey: SECRET + '8', backdropKey: SECRET + 'f' }],
     bunkerEndpoint: { publicKey: 'ep', privateKey: SECRET + '9', createdAt: 1, pairingSecret: SECRET + 'a' },
     appBunkerEndpoint: { publicKey: 'ap', privateKey: SECRET + 'b', createdAt: 1, pairingSecret: SECRET + 'c', pairings: [] },
   } as unknown as DependantIdentity;

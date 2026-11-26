@@ -478,12 +478,21 @@ export async function saveIdentityEncrypted(identity: SignetIdentity, passphrase
   const encryptedPersonaContactAvatarKey = identity.persona.contactAvatarKey
     ? await encryptSecret(identity.persona.contactAvatarKey, passphrase)
     : undefined;
+  // Guardian-set backdrop keys (a paired child's phone keeps the guardian's
+  // here) — same at-rest treatment as avatarKey; hash/url stay clear.
+  const encryptedNpBackdropKey = identity.naturalPerson.backdropKey
+    ? await encryptSecret(identity.naturalPerson.backdropKey, passphrase)
+    : undefined;
+  const encryptedPersonaBackdropKey = identity.persona.backdropKey
+    ? await encryptSecret(identity.persona.backdropKey, passphrase)
+    : undefined;
   const encryptedExtras = identity.extraPersonas
     ? await Promise.all(identity.extraPersonas.map(async (ep) => ({
         ...ep,
         privateKey: ep.privateKey ? await encryptSecret(ep.privateKey, passphrase) : '',
         avatarKey: ep.avatarKey ? await encryptSecret(ep.avatarKey, passphrase) : undefined,
         contactAvatarKey: ep.contactAvatarKey ? await encryptSecret(ep.contactAvatarKey, passphrase) : undefined,
+        backdropKey: ep.backdropKey ? await encryptSecret(ep.backdropKey, passphrase) : undefined,
       })))
     : undefined;
   // Professional persona — the canonical Pro key currently lives in its own
@@ -508,12 +517,14 @@ export async function saveIdentityEncrypted(identity: SignetIdentity, passphrase
       privateKey: encryptedNpPrivateKey,
       avatarKey: encryptedNpAvatarKey,
       contactAvatarKey: encryptedNpContactAvatarKey,
+      backdropKey: encryptedNpBackdropKey,
     },
     persona: {
       ...identity.persona,
       privateKey: encryptedPersonaPrivateKey,
       avatarKey: encryptedPersonaAvatarKey,
       contactAvatarKey: encryptedPersonaContactAvatarKey,
+      backdropKey: encryptedPersonaBackdropKey,
     },
     extraPersonas: encryptedExtras,
     professionalPersona: encryptedProfessional,
@@ -599,12 +610,20 @@ export async function loadIdentityDecrypted(pubkey: string, passphrase: string):
   const personaContactAvatarKey = stored.persona.contactAvatarKey
     ? await decryptFully(stored.persona.contactAvatarKey)
     : undefined;
+  // Guardian-set backdrop keys — 64-char hex like avatarKey.
+  const npBackdropKey = stored.naturalPerson.backdropKey
+    ? await decryptFully(stored.naturalPerson.backdropKey)
+    : undefined;
+  const personaBackdropKey = stored.persona.backdropKey
+    ? await decryptFully(stored.persona.backdropKey)
+    : undefined;
   const decryptedExtras = stored.extraPersonas
     ? await Promise.all(stored.extraPersonas.map(async (ep: ExtraPersona) => ({
         ...ep,
         privateKey: ep.privateKey ? await decryptFully(ep.privateKey) : '',
         avatarKey: ep.avatarKey ? await decryptFully(ep.avatarKey) : undefined,
         contactAvatarKey: ep.contactAvatarKey ? await decryptFully(ep.contactAvatarKey) : undefined,
+        backdropKey: ep.backdropKey ? await decryptFully(ep.backdropKey) : undefined,
       })))
     : undefined;
   // Professional persona — symmetric with the encrypt path above. Decrypt the
@@ -626,12 +645,14 @@ export async function loadIdentityDecrypted(pubkey: string, passphrase: string):
       privateKey: npPrivateKey,
       avatarKey: npAvatarKey,
       contactAvatarKey: npContactAvatarKey,
+      backdropKey: npBackdropKey,
     },
     persona: {
       ...stored.persona,
       privateKey: personaPrivateKey,
       avatarKey: personaAvatarKey,
       contactAvatarKey: personaContactAvatarKey,
+      backdropKey: personaBackdropKey,
     },
     extraPersonas: decryptedExtras,
     professionalPersona: decryptedProfessional,
@@ -2013,12 +2034,20 @@ export async function saveDependant(dependant: DependantIdentity, encryptionKey:
   const encPersonaContactAvatarKey = dependant.persona.contactAvatarKey
     ? await encryptSecret(dependant.persona.contactAvatarKey, encryptionKey)
     : undefined;
+  // Backdrop keys — same at-rest treatment as avatarKey.
+  const encNpBackdropKey = dependant.naturalPerson.backdropKey
+    ? await encryptSecret(dependant.naturalPerson.backdropKey, encryptionKey)
+    : undefined;
+  const encPersonaBackdropKey = dependant.persona.backdropKey
+    ? await encryptSecret(dependant.persona.backdropKey, encryptionKey)
+    : undefined;
   const encExtras = dependant.extraPersonas
     ? await Promise.all(dependant.extraPersonas.map(async (ep) => ({
         ...ep,
         privateKey: ep.privateKey ? await encryptSecret(ep.privateKey, encryptionKey) : '',
         avatarKey: ep.avatarKey ? await encryptSecret(ep.avatarKey, encryptionKey) : undefined,
         contactAvatarKey: ep.contactAvatarKey ? await encryptSecret(ep.contactAvatarKey, encryptionKey) : undefined,
+        backdropKey: ep.backdropKey ? await encryptSecret(ep.backdropKey, encryptionKey) : undefined,
       })))
     : undefined;
   const encEndpoint = dependant.bunkerEndpoint
@@ -2072,8 +2101,8 @@ export async function saveDependant(dependant: DependantIdentity, encryptionKey:
     ...(updatedAt !== undefined ? { updatedAt } : {}),
     ...(childDevice ? { childDevice } : {}),
     id: DEPENDANT_PREFIX + dependant.id,
-    naturalPerson: { ...dependant.naturalPerson, privateKey: encNpPriv, avatarKey: encNpAvatarKey, contactAvatarKey: encNpContactAvatarKey },
-    persona: { ...dependant.persona, privateKey: encPersonaPriv, avatarKey: encPersonaAvatarKey, contactAvatarKey: encPersonaContactAvatarKey },
+    naturalPerson: { ...dependant.naturalPerson, privateKey: encNpPriv, avatarKey: encNpAvatarKey, contactAvatarKey: encNpContactAvatarKey, backdropKey: encNpBackdropKey },
+    persona: { ...dependant.persona, privateKey: encPersonaPriv, avatarKey: encPersonaAvatarKey, contactAvatarKey: encPersonaContactAvatarKey, backdropKey: encPersonaBackdropKey },
     extraPersonas: encExtras,
     bunkerEndpoint: encEndpoint,
     appBunkerEndpoint: encAppEndpoint,
@@ -2153,12 +2182,20 @@ export async function getDependants(guardianPubkey: string, encryptionKey?: stri
         const personaContactAvatarKey = record.persona?.contactAvatarKey
           ? await decryptFully(record.persona.contactAvatarKey)
           : undefined;
+        // Backdrop keys — same shape as avatarKey (64-char hex).
+        const npBackdropKey = record.naturalPerson?.backdropKey
+          ? await decryptFully(record.naturalPerson.backdropKey)
+          : undefined;
+        const personaBackdropKey = record.persona?.backdropKey
+          ? await decryptFully(record.persona.backdropKey)
+          : undefined;
         const decExtras = record.extraPersonas
           ? await Promise.all((record.extraPersonas as ExtraPersona[]).map(async (ep: ExtraPersona) => ({
               ...ep,
               privateKey: ep.privateKey ? await decryptFully(ep.privateKey) : '',
               avatarKey: ep.avatarKey ? await decryptFully(ep.avatarKey) : undefined,
               contactAvatarKey: ep.contactAvatarKey ? await decryptFully(ep.contactAvatarKey) : undefined,
+              backdropKey: ep.backdropKey ? await decryptFully(ep.backdropKey) : undefined,
             })))
           : undefined;
         const decEndpoint = record.bunkerEndpoint
@@ -2213,8 +2250,8 @@ export async function getDependants(guardianPubkey: string, encryptionKey?: stri
         dependants.push({
           ...record,
           id: realId,
-          naturalPerson: { ...record.naturalPerson, privateKey: npPriv, avatarKey: npAvatarKey, contactAvatarKey: npContactAvatarKey },
-          persona: { ...record.persona, privateKey: personaPriv, avatarKey: personaAvatarKey, contactAvatarKey: personaContactAvatarKey },
+          naturalPerson: { ...record.naturalPerson, privateKey: npPriv, avatarKey: npAvatarKey, contactAvatarKey: npContactAvatarKey, backdropKey: npBackdropKey },
+          persona: { ...record.persona, privateKey: personaPriv, avatarKey: personaAvatarKey, contactAvatarKey: personaContactAvatarKey, backdropKey: personaBackdropKey },
           extraPersonas: decExtras,
           bunkerEndpoint: decEndpoint,
           appBunkerEndpoint: decAppEndpoint,

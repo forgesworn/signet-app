@@ -40,6 +40,27 @@ export interface SlotAvatarFields {
 }
 
 /**
+ * A guardian-set card backdrop sent to a dependant's own phone, encrypted, over
+ * the persona-inventory rail (same shape as the avatar fields above).
+ *
+ * On the guardian's phone these point at the blob the guardian uploaded for the
+ * child; on the child's phone they are what the inventory delivered. The picture
+ * the guardian picked also sits, in clear, in the device-local `backdrop:<pubkey>`
+ * preferences row; these fields only say where the ENCRYPTED copy lives.
+ * `backdropKey` is the AES-256-GCM key, ENCRYPTED at rest like `avatarKey`.
+ * Never on the dependants sync wire (device-local, kept by `preserveLocalSlotState`).
+ * Fresh per-upload randomness, and never an uploader key: the blob's Blossom
+ * delete is signed by an HMAC uploader (`BACKDROP_UPLOADER_DOMAIN`), because
+ * this key is handed to the child.
+ */
+export interface SlotBackdropFields {
+  backdropHash?: string;
+  backdropBlossomUrl?: string;
+  backdropKey?: string;
+  backdropUpdatedAt?: number;
+}
+
+/**
  * Public-profile (kind-0) configuration carried on every keypair slot.
  * The 8 content fields are what `buildKindZeroContent` emits (minus
  * `displayName`, which the slot already has); the `publicProfile`
@@ -87,7 +108,7 @@ export interface FollowsImportState {
 }
 
 /** A single persona (beyond the primary natural-person and default persona) */
-export interface ExtraPersona extends SlotAvatarFields, SlotPublicationFields {
+export interface ExtraPersona extends SlotAvatarFields, SlotBackdropFields, SlotPublicationFields {
   /** Derived pubkey (hex) */
   publicKey: string;
   /** Derived private key (hex) */
@@ -199,7 +220,7 @@ export interface SignetIdentity {
     publicKey: string;
     privateKey: string;
     displayName: string;
-  } & SlotAvatarFields & SlotPublicationFields;
+  } & SlotAvatarFields & SlotBackdropFields & SlotPublicationFields;
   persona: {
     publicKey: string;
     privateKey: string;
@@ -208,7 +229,7 @@ export interface SignetIdentity {
     displayNameUpdatedAt?: number;
     /** The kind 31000 event ID for the current display-name credential (for supersession) */
     lastNameCredentialId?: string;
-  } & SlotAvatarFields & SlotPublicationFields;
+  } & SlotAvatarFields & SlotBackdropFields & SlotPublicationFields;
   /** Additional personas derived from the mnemonic via nsec-tree */
   extraPersonas?: ExtraPersona[];
   /**

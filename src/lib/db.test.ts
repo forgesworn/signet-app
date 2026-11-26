@@ -274,6 +274,36 @@ describe('Identity encrypted round-trip', () => {
     expect(loaded!.extraPersonas![0].avatarKey).toBe(extraAvatarKey);
   }, TIMEOUT);
 
+  it('encrypts backdropKey on every identity slot (the child phone stores the guardian\'s key here)', async () => {
+    const db = await freshDb();
+    const npKey = 'a1'.repeat(32), personaKey = 'b2'.repeat(32), extraKey = 'c3'.repeat(32);
+    const identity = makeIdentity({
+      naturalPerson: { publicKey: '11'.repeat(32), privateKey: '', displayName: 'Alex',
+        backdropHash: 'd'.repeat(64), backdropBlossomUrl: 'https://blossom.example.com', backdropKey: npKey, backdropUpdatedAt: 5 },
+      persona: { publicKey: '33'.repeat(32), privateKey: '', displayName: 'Alex (anon)',
+        backdropHash: 'e'.repeat(64), backdropBlossomUrl: 'https://blossom.example.com', backdropKey: personaKey, backdropUpdatedAt: 6 },
+      extraPersonas: [{ publicKey: '55'.repeat(32), privateKey: '', displayName: 'Gaming', derivationName: '',
+        backdropHash: 'f'.repeat(64), backdropBlossomUrl: 'https://blossom.example.com', backdropKey: extraKey, backdropUpdatedAt: 7 }],
+    });
+    await db.saveIdentityEncrypted(identity, PASSPHRASE);
+    const raw = await rawOpen();
+    const stored = await raw.get('identity', identity.id);
+    raw.close();
+    for (const [slot, plain] of [[stored.naturalPerson, npKey], [stored.persona, personaKey], [stored.extraPersonas[0], extraKey]] as const) {
+      expect(slot.backdropKey).toBeDefined();
+      expect(slot.backdropKey).not.toBe(plain);
+      expect(JSON.stringify(slot)).not.toContain(plain);
+    }
+    expect(stored.persona.backdropHash).toBe('e'.repeat(64));
+    vi.resetModules();
+    const db2 = await import('./db');
+    const loaded = await db2.loadIdentityDecrypted(identity.id, PASSPHRASE);
+    expect(loaded!.naturalPerson.backdropKey).toBe(npKey);
+    expect(loaded!.persona.backdropKey).toBe(personaKey);
+    expect(loaded!.extraPersonas![0].backdropKey).toBe(extraKey);
+    expect(loaded!.extraPersonas![0].backdropUpdatedAt).toBe(7);
+  }, TIMEOUT);
+
   it('leaves avatarKey undefined when no avatar is set (no encrypt-of-empty)', async () => {
     // Personas without an avatar should round-trip with avatarKey === undefined,
     // not encrypted-empty-string. Otherwise `loadIdentityDecrypted` would
@@ -1393,6 +1423,52 @@ describe('Dependant bunker endpoint round-trip', () => {
     expect(deps[0].naturalPerson.avatarUpdatedAt).toBe(1000);
     expect(deps[0].persona.avatarKey).toBe(personaAvatarKey);
     expect(deps[0].extraPersonas![0].avatarKey).toBe(extraAvatarKey);
+  }, TIMEOUT);
+
+  it('per-dep-persona backdropKey is encrypted at rest on every slot and round-trips', async () => {
+    // A guardian-set card backdrop: hash/url/updatedAt are routing fields and
+    // stay clear, the AES key is a decryption secret and is sealed like avatarKey.
+    const db = await freshDb();
+    const npKey = '44'.repeat(32), personaKey = '55'.repeat(32), extraKey = '66'.repeat(32);
+    const dep = makeDep({
+      naturalPerson: { publicKey: DEP_PUB, privateKey: '1'.repeat(64), displayName: 'Alice',
+        backdropHash: 'a1'.repeat(32), backdropBlossomUrl: 'https://blossom.example.com', backdropKey: npKey, backdropUpdatedAt: 10 },
+      persona: { publicKey: 'e'.repeat(64), privateKey: '2'.repeat(64), displayName: 'Alice (anon)',
+        backdropHash: 'b1'.repeat(32), backdropBlossomUrl: 'https://blossom.example.com', backdropKey: personaKey, backdropUpdatedAt: 20 },
+      extraPersonas: [{ publicKey: 'f'.repeat(64), privateKey: '3'.repeat(64), displayName: 'Gaming', derivationName: 'persona-1',
+        backdropHash: 'c1'.repeat(32), backdropBlossomUrl: 'https://blossom.example.com', backdropKey: extraKey, backdropUpdatedAt: 30 }],
+    });
+    await db.saveDependant(dep as unknown as Parameters<typeof db.saveDependant>[0], PASSPHRASE);
+
+    const raw = await rawOpen();
+    const stored = await raw.get('identity', 'dependant:' + DEP_PUB);
+    raw.close();
+    for (const [slot, plain] of [[stored.naturalPerson, npKey], [stored.persona, personaKey], [stored.extraPersonas[0], extraKey]] as const) {
+      expect(slot.backdropKey).toBeDefined();
+      expect(slot.backdropKey).not.toBe(plain);
+      expect(JSON.stringify(slot)).not.toContain(plain);
+    }
+    expect(stored.naturalPerson.backdropHash).toBe('a1'.repeat(32));
+    expect(stored.persona.backdropBlossomUrl).toBe('https://blossom.example.com');
+    expect(stored.extraPersonas[0].backdropUpdatedAt).toBe(30);
+
+    vi.resetModules();
+    const db2 = await import('./db');
+    const deps = await db2.getDependants(GUARDIAN, PASSPHRASE);
+    expect(deps[0].naturalPerson.backdropKey).toBe(npKey);
+    expect(deps[0].persona.backdropKey).toBe(personaKey);
+    expect(deps[0].extraPersonas![0].backdropKey).toBe(extraKey);
+    expect(deps[0].persona.backdropHash).toBe('b1'.repeat(32));
+  }, TIMEOUT);
+
+  it('dep without backdrops round-trips with backdropKey === undefined', async () => {
+    const db = await freshDb();
+    await db.saveDependant(makeDep() as unknown as Parameters<typeof db.saveDependant>[0], PASSPHRASE);
+    const raw = await rawOpen();
+    const stored = await raw.get('identity', 'dependant:' + DEP_PUB);
+    raw.close();
+    expect(stored.naturalPerson.backdropKey).toBeUndefined();
+    expect(stored.persona.backdropKey).toBeUndefined();
   }, TIMEOUT);
 
   it('dep without avatars round-trips with avatarKey === undefined', async () => {
