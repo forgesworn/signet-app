@@ -3826,25 +3826,28 @@ export async function saveConnectedClient(client: ConnectedClient): Promise<void
 }
 
 /**
- * Change the "ask each time" choice on a connected client without touching
- * anything else (`allowAlways` in particular, which also means "connected" for
- * the crypto gate). `askToSign: false` removes the field. No-op when the
- * client is gone.
+ * Update the current record so background bookkeeping cannot restore a
+ * disconnected client or overwrite a newer permission. A legacy persona
+ * binding is set once. `askToSign: false` removes the field.
  */
 export async function updateConnectedClient(
   clientPubkey: string,
-  patch: { askToSign: boolean },
-): Promise<void> {
+  patch: { askToSign?: boolean; lastSeenAt?: number; bindTo?: string },
+): Promise<ConnectedClient | undefined> {
   const db = await getDB();
   if (!db.objectStoreNames.contains('connectedClients')) return;
   const tx = db.transaction('connectedClients', 'readwrite');
   const existing: ConnectedClient | undefined = await tx.store.get(clientPubkey);
   if (existing) {
-    const { askToSign: _drop, ...rest } = existing;
-    await tx.store.put(patch.askToSign ? { ...rest, askToSign: true } : rest);
+    if (patch.askToSign === true) existing.askToSign = true;
+    if (patch.askToSign === false) delete existing.askToSign;
+    if (patch.lastSeenAt !== undefined) existing.lastSeenAt = Math.max(existing.lastSeenAt, patch.lastSeenAt);
+    if (patch.bindTo !== undefined && !existing.boundPubkey) existing.boundPubkey = patch.bindTo;
+    await tx.store.put(existing);
   }
   await tx.done;
   if (existing) notifyConnectedClientsChanged();
+  return existing;
 }
 
 export async function deleteConnectedClient(clientPubkey: string): Promise<void> {

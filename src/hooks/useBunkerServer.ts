@@ -995,14 +995,17 @@ export function useBunkerServer({ enabled, relayUrl, persistentRelayUrl, routes,
     // from before binding existed is bound to the first owner route it uses.
     if (!route.dependantId && !route.childGate && scopedClient) {
       const routePubkey = route.pubkey.toLowerCase();
-      const bound = scopedClient.boundPubkey?.toLowerCase();
+      let bound = scopedClient.boundPubkey?.toLowerCase();
+      if (!bound) {
+        try {
+          const current = await db.updateConnectedClient(request.clientPubkey, { bindTo: routePubkey });
+          bound = current?.boundPubkey?.toLowerCase();
+        } catch { /* binding is retried on the next request */ }
+        if (stale()) { unmark(); return; }
+      }
       // Only fresh consent that can be persisted may replace a binding. The
       // connect handler saves it before ACK; other methods still stay silent.
       if (bound && bound !== routePubkey && !(authPairing && onAuthFlowPairingCompleteRef.current)) return;
-      if (!bound) {
-        try { await db.saveConnectedClient({ ...scopedClient, boundPubkey: routePubkey }); }
-        catch { /* binding is retried on the next request */ }
-      }
     }
 
     // Standard connect params[2] is the requested permissions string. Some
@@ -1492,10 +1495,7 @@ export function useBunkerServer({ enabled, relayUrl, persistentRelayUrl, routes,
       // lastSeenAt for app-route pairings via touchAppBunkerPairing.
       if (!route.dependantId) {
         try {
-          const existing = await db.getConnectedClient(request.clientPubkey);
-          if (existing) {
-            await db.saveConnectedClient({ ...existing, lastSeenAt: Math.floor(Date.now() / 1000) });
-          }
+          await db.updateConnectedClient(request.clientPubkey, { lastSeenAt: Math.floor(Date.now() / 1000) });
         } catch { /* lastSeenAt is bookkeeping; the answer already went out */ }
       }
       return;
@@ -1643,13 +1643,13 @@ export function useBunkerServer({ enabled, relayUrl, persistentRelayUrl, routes,
         try {
           const signed = await (route.signingBackend ?? route.backend).signEvent(template);
           await reply(route.backend, request.clientPubkey, request.id, JSON.stringify(signed));
-          await db.saveConnectedClient({
-            ...existing,
-            lastSeenAt: Math.floor(Date.now() / 1000),
-          });
         } catch {
           await reply(route.backend, request.clientPubkey, request.id, undefined, 'signing failed');
+          return;
         }
+        try {
+          await db.updateConnectedClient(request.clientPubkey, { lastSeenAt: Math.floor(Date.now() / 1000) });
+        } catch { /* lastSeenAt is bookkeeping; the answer already went out */ }
         return;
       }
     }
@@ -1992,7 +1992,7 @@ export function useBunkerServer({ enabled, relayUrl, persistentRelayUrl, routes,
               boundPubkey: client?.boundPubkey ?? req.route.pubkey.toLowerCase(),
             });
           } else if (client) {
-            await db.saveConnectedClient({ ...client, lastSeenAt: now });
+            await db.updateConnectedClient(req.clientPubkey, { lastSeenAt: now });
           }
         } catch { /* allowAlways persistence is best-effort; never leak internals */ }
         return;

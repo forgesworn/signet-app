@@ -4779,9 +4779,8 @@ function AppContent() {
 
   // The display label of the owner persona a Bunker request addresses, by its
   // route pubkey: the persona, an extra persona, the Professional persona, or
-  // the real identity once it is active. Shown on the request card and in the
-  // approval modal only; the native notification never carries it (the real
-  // identity's label can be a legal name, and the lock screen is public).
+  // the real identity once it is active. The request, approval and unlocked
+  // connection screens use these labels. The lock screen is public.
   const bunkerOwnerLabelFor = useCallback((routePubkey: string): string | undefined => {
     if (!identity) return undefined;
     const pk = routePubkey.toLowerCase();
@@ -12589,6 +12588,7 @@ function AppContent() {
     return renderSettingsPage('connections', 'Connected apps', (
       <Connections
         connectedClients={connectedClients}
+        bunkerPersonaLabel={encryptionKey ? bunkerOwnerLabelFor : undefined}
         onDisconnectClient={disconnectClient}
         phoneApps={phoneApps}
         onForgetPhoneApp={nip55.forget}

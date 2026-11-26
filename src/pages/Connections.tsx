@@ -8,6 +8,8 @@ interface Props {
    *  `allowAlways` can sign/decrypt WITHOUT a prompt, so it must be listed and
    *  revocable here — this is the surface the ConnectedClient docstring promises. */
   connectedClients?: ConnectedClient[];
+  /** The local name of the persona bound to a bunker connection. */
+  bunkerPersonaLabel?: (pubkey: string) => string | undefined;
   /** End a bunker client's grant — deletes the ConnectedClient row so its silent
    *  sign/decrypt access stops (the next request prompts again). */
   onDisconnectClient?: (clientPubkey: string) => void;
@@ -38,7 +40,7 @@ export interface PhoneApp {
   grantedAt: number;
 }
 
-export function Connections({ connectedClients, onDisconnectClient, phoneApps, onForgetPhoneApp, onBack }: Props) {
+export function Connections({ connectedClients, bunkerPersonaLabel, onDisconnectClient, phoneApps, onForgetPhoneApp, onBack }: Props) {
   const [confirmingClient, setConfirmingClient] = useState<string | null>(null);
 
   const clients = connectedClients ?? [];
@@ -83,6 +85,7 @@ export function Connections({ connectedClients, onDisconnectClient, phoneApps, o
           <div className="card card-flush">
             {clients.map((client, i) => {
               const isConfirming = confirmingClient === client.clientPubkey;
+              const persona = client.boundPubkey ? bunkerPersonaLabel?.(client.boundPubkey) : undefined;
               return (
                 <div
                   key={client.clientPubkey}
@@ -104,6 +107,11 @@ export function Connections({ connectedClients, onDisconnectClient, phoneApps, o
                       {client.appUrl && (
                         <div style={{ fontSize: '0.8rem', color: 'var(--text-muted)', marginBottom: 4, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
                           {client.appUrl.slice(0, 200)}
+                        </div>
+                      )}
+                      {persona && (
+                        <div style={{ fontSize: '0.8rem', color: 'var(--text-secondary)', overflowWrap: 'anywhere' }}>
+                          As {persona}
                         </div>
                       )}
                       <div style={{ fontSize: '0.75rem', color: 'var(--text-muted)', fontFamily: 'var(--font-mono)' }}>
