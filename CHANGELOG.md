@@ -3,6 +3,12 @@
 Short, user-facing notes for each My Signet release. Zapstore shows the
 section for the version being published (`release_notes` in zapstore.yaml).
 
+## Unreleased
+
+- Card backdrops work on your dependants' cards and on the child's own phone. A backdrop you set on a dependant's card is sent to their phone, encrypted on the way, and shows there as "Set by your guardian"; the child can pick their own, which wins. Backdrops are not encrypted on either phone and show while the app is locked
+- On a child's phone, their guardian now manages persona names, adding and deleting personas and their public Nostr profile; publishing a profile is done from the guardian's phone
+- Fix: saving your name on the Profile page now saves it
+
 ## 0.31.0
 
 - Keeps: a Keep owner can share an invite link for any game the Keep hosts, and opening the link goes straight to the invite screen with the game and person filled in. My Signet asks before a link opens a Keep, so another app can't make your phone contact a Keep's relays. In child mode an invite link is dropped
