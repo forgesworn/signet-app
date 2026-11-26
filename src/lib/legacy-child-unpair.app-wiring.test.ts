@@ -19,6 +19,21 @@ describe('legacy unpair notice wiring in App.tsx', () => {
     expect(body).toContain('} catch { /* best effort */ }');
   });
 
+  it('removing a legacy dependant captures the target before the delete and publishes after it; the handover removals send nothing', () => {
+    const start = app.indexOf('let unpairTarget: LegacyUnpairTarget | null = null;');
+    expect(start).toBeGreaterThan(-1);
+    const end = app.indexOf('clearThenPublishLegacyUnpair(unpairTarget, () => removeDependant(depPubkey))', start);
+    expect(end).toBeGreaterThan(start);
+    const body = app.slice(start, end);
+    expect(body).toContain('legacyUnpairTarget(stored ?? dep, [preferences.relayUrl ?? DEFAULT_RELAY_URL])');
+    expect(body).not.toContain('removeDependant(');
+    expect(body).not.toContain('publishLegacyUnpairedNotice');
+    // The independence handover keeps the plain removal.
+    expect(app.split('await removeDependant(dep.id, { keepBlobs: true });').length - 1).toBe(1);
+    expect(app).toContain('await removeDependant(depId, { keepBlobs: true });');
+    expect(app).not.toMatch(/clearThenPublishLegacyUnpair\([^)]*keepBlobs/);
+  });
+
   it('the child reads it on the inventory relay and feeds one unpaired flag to every surface', () => {
     expect(app).toContain('const legacyChildUnpaired = useLegacyChildUnpaired({');
     expect(app).toContain('const childUnpaired = childDeviceLink.unpaired || legacyChildUnpaired;');

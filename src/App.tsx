@@ -13834,7 +13834,15 @@ function AppContent() {
             await contactsV2.reload();
           }
           await retractDepProfilesBeforePurge(dep);
-          await removeDependant(depPubkey);
+          // A legacy phone-paired child is told once the record is gone (never
+          // before: see `clearThenPublishLegacyUnpair`). The endpoint is read
+          // from the record as stored now, and captured before the delete.
+          let unpairTarget: LegacyUnpairTarget | null = null;
+          try {
+            const stored = encryptionKey ? (await loadFreshDependants(encryptionKey)).find(d => d.id === depPubkey) : undefined;
+            unpairTarget = legacyUnpairTarget(stored ?? dep, [preferences.relayUrl ?? DEFAULT_RELAY_URL]);
+          } catch { /* best effort */ }
+          await clearThenPublishLegacyUnpair(unpairTarget, () => removeDependant(depPubkey));
           navigateBack();
         } : undefined}
         contactsLoading={familyContacts.loading}
