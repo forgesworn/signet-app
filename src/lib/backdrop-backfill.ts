@@ -9,7 +9,7 @@
  * record sending that exact picture (`sent && sentDigest === localDigest`).
  *
  * Quiet and safe by construction:
- * - sequential, once per `(slot, picture digest)` per unlock (`attempted`, kept
+ * - sequential, once per `(slot, paired phone, picture digest)` per unlock (`attempted`, kept
  *   by the caller); a failure stays silent and the card's retry button remains;
  * - a user action always wins. A slot with a send or remove in flight is
  *   skipped, and the send carries the slot generation read BEFORE the stored
@@ -53,7 +53,8 @@ export async function runBackdropBackfill(deps: BackfillDeps): Promise<number> {
       if (!blob) continue;
       const digest = await deps.digest(blob);
       if (link.sent && link.sentDigest === digest) continue;
-      const memo = `${link.slotKey}:${digest}`;
+      // The pairing is part of the key: after an unpair and a re-pair the new phone has nothing yet.
+      const memo = `${link.slotKey}:${link.pairing ?? ''}:${digest}`;
       if (deps.attempted.has(memo)) continue;
       if (!deps.isLive()) return started;
       deps.attempted.add(memo);

@@ -7,7 +7,7 @@ import { useDependants } from './useDependants';
 import { saveIdentityEncrypted, getDependants, purgeAllUserData, setCardBackdrop, listBlobOrphanRows } from '../lib/db';
 import { createNewIdentity } from '../lib/signet';
 import type { SignetIdentity } from '../types';
-import type { DeleteOutcome } from '../lib/blob-deletion';
+import { deleteOwnedBlob, type DeleteOutcome } from '../lib/blob-deletion';
 import { AVATAR_UPLOADER_DOMAIN, BACKDROP_UPLOADER_DOMAIN } from '../lib/blossom-uploader';
 
 const KEY = 'a'.repeat(64);
@@ -91,6 +91,28 @@ describe('removeDependant: blob cleanup', () => {
     expect(del).toHaveBeenCalledTimes(6);
     expect(await orphanHashes()).toEqual([]);
   }, 60_000);
+
+  it('R1 with the real deleter: a blob another stored dependant still references never gets a DELETE; the rest do', async () => {
+    const fetchImpl = vi.fn(async () => new Response(null, { status: 200 }));
+    const del = (domain: string, hash: string, server: string) => deleteOwnedBlob({ hash, server, domain, encryptionKey: KEY, fetchImpl: fetchImpl as unknown as typeof fetch });
+    const s = await setup(del);
+    // A second dependant whose persona shares Robin's persona avatar bytes (same hash).
+    let sam!: Awaited<ReturnType<typeof s.hook.result.current.addDependant>>;
+    await act(async () => {
+      sam = await s.hook.result.current.addDependant('Sam', undefined, { deviceDerive: async () => ({
+        naturalPerson: { publicKey: 'd'.repeat(64), privateKey: '' as const }, persona: { publicKey: 'e'.repeat(64), privateKey: '' as const },
+      }) });
+    });
+    await act(async () => { await s.hook.result.current.setDependantPersonaAvatar(sam.id, 'persona', av('4')); });
+    let out!: Awaited<ReturnType<typeof s.hook.result.current.removeDependant>>;
+    await act(async () => { out = await s.hook.result.current.removeDependant(s.dep.id); });
+    await out.deletion;
+    const deletedHashes = (fetchImpl.mock.calls as unknown as Array<[string, RequestInit]>)
+      .filter(c => c[1]?.method === 'DELETE').map(c => c[0].split('/').pop()).sort();
+    expect(deletedHashes).toEqual(['5', '6', '7', '8', '9'].map(h).sort());
+    expect(deletedHashes).not.toContain(h('4'));
+    expect(await orphanHashes()).toEqual([]);
+  }, 90_000);
 
   it('the handover path (keepBlobs) deletes nothing but still removes the record', async () => {
     const del = vi.fn(async (): Promise<DeleteOutcome> => 'deleted');
@@ -204,6 +226,25 @@ describe('unpair: sent backdrops', () => {
     expect((await stored(s.g)).bunkerEndpoint).toBeUndefined();
     await expectBackdropsCleared(s.g);
     expect(await ownRows()).toHaveLength(3);
+  }, 60_000);
+
+  it('an unpair outranks a backdrop upload still in flight: it saves no pointer afterwards', async () => {
+    const del = vi.fn(async (): Promise<DeleteOutcome> => 'deleted');
+    const s = await setup(del);
+    let release!: () => void;
+    const gate = new Promise<void>(r => { release = r; });
+    const { sendBackdropToChild } = await import('../lib/backdrop-send');
+    const sending = sendBackdropToChild(new Blob(['pic']), {
+      slotKey: `${s.dep.id}:persona`, encryptionKey: KEY, getKey: () => KEY, blossomUrl: SERVER, blossomConsent: true,
+      upload: async () => { await gate; return { hash: h('a'), blossomUrl: SERVER, keyHex: h('a'), updatedAt: 1 }; },
+      saveSlot: (meta, digest) => s.hook.result.current.setDependantPersonaBackdrop(s.dep.id, 'persona', meta ? { ...meta, sentDigest: digest } : null),
+      deleteBlob: del,
+    });
+    await act(async () => { await s.hook.result.current.clearDependantBackdrops(s.dep.id); });
+    release();
+    const res = await sending;
+    expect(res.ok).toBe(false);
+    expect((await stored(s.g)).persona.backdropHash).toBeUndefined();
   }, 60_000);
 
   it('a dependant that never sent a backdrop is left alone (nothing written, nothing deleted)', async () => {

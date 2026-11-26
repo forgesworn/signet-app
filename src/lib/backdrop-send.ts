@@ -74,6 +74,15 @@ export function backdropSlotState(slotKey: string): { busy: boolean; generation:
   return { busy: (inFlight.get(slotKey) ?? 0) > 0, generation: backdropSlots.current(slotKey) };
 }
 
+/**
+ * Outrank every send in flight on a dependant's slots (an unpair is under way:
+ * an upload that lands after it must discard itself, not save a pointer the
+ * phone can no longer use). `slotTargets` as the lookup keys them.
+ */
+export function supersedeBackdropSends(dependantId: string, slotTargets: readonly string[]): void {
+  for (const target of slotTargets) backdropSlots.bump(`${dependantId}:${target}`);
+}
+
 async function whileInFlight<T>(slotKey: string, run: () => Promise<T>): Promise<T> {
   inFlight.set(slotKey, (inFlight.get(slotKey) ?? 0) + 1);
   try {
@@ -271,6 +280,7 @@ export function buildDependantBackdropLookup(env: BackdropLinkEnv): (pubkey: str
         sentDigest: slot.backdropSentDigest,
         sent: !!(slot.backdropHash && slot.backdropKey && slot.backdropBlossomUrl),
         slotKey: `${dep.id}:${t}`,
+        pairing: dep.bunkerEndpoint?.authorizedClientPubkey,
         send: (blob, opts) => (canSend
           ? sendBackdropToChild(blob, { ...deps(), backfill: opts?.backfill })
           : Promise.resolve<BackdropSendResult>({ ok: false, reason: BACKDROP_COPY.reasons.failed })),

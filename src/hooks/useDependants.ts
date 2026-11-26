@@ -18,6 +18,7 @@ import { nextDependantPersonaName, dependantPersonaTombstones, applyDependantPer
 import { createSerialQueue } from '../lib/contacts-v2-queue';
 import { listIndependenceArchives } from '../lib/independence-store';
 import { sanitizeDisplayName } from '../lib/text-sanitize';
+import { supersedeBackdropSends } from '../lib/backdrop-send';
 import { collectSlotBlobsToDelete, deleteRemovedBlobs, type BlobDeleter, type SlotBlobToDelete } from '../lib/blob-deletion';
 
 // Serialize allocation/deletion across hook instances in this app.
@@ -42,6 +43,11 @@ function findSlot(dep: DependantIdentity, target: SlotTarget): Partial<ExtraPers
 }
 
 const NO_BACKDROP = { backdropHash: undefined, backdropBlossomUrl: undefined, backdropKey: undefined, backdropUpdatedAt: undefined, backdropSentDigest: undefined };
+
+/** The slot targets of a dependant as the backdrop lookup keys them. */
+function slotTargetsOf(dep: DependantIdentity): string[] {
+  return ['natural-person', 'persona', ...(dep.extraPersonas ?? []).map(p => p.publicKey)];
+}
 
 /** Whether a slot names any part of a sent backdrop. */
 function slotHasBackdrop(slot: Partial<ExtraPersona>): boolean {
@@ -134,7 +140,7 @@ export function useDependants(
   const deleteGoneBlobs = useCallback((blobs: readonly SlotBlobToDelete[]): Promise<void> => {
     const deleteBlob = deleteBlobRef.current;
     if (blobs.length === 0 || !deleteBlob) return Promise.resolve();
-    return deleteRemovedBlobs(blobs, { deleteBlob, isLive: () => liveKeyRef.current !== null });
+    return deleteRemovedBlobs(blobs, { deleteBlob, isLive: () => !!liveKeyRef.current });
   }, []);
 
   /**
@@ -1120,6 +1126,8 @@ export function useDependants(
       // are cleared in the same write; the guardian's own `backdrop:` rows and
       // every avatar stay, so the cards still show (a re-pair reads as unsent).
       blobs = collectSlotBlobsToDelete(dep, ['backdrop']);
+      // A send still uploading must not save a pointer after this.
+      supersedeBackdropSends(dep.id, slotTargetsOf(dep));
       return { ...(withoutBackdropPointers(dep) ?? dep), bunkerEndpoint: undefined };
     });
     if (!saved) return;
@@ -1157,6 +1165,7 @@ export function useDependants(
         // Checked after the write queue's wait: a lock during it saves nothing.
         if (liveKeyRef.current !== key) throw new Error('Encryption key required');
         blobs = collectSlotBlobsToDelete(dep, ['backdrop']);
+        supersedeBackdropSends(dep.id, slotTargetsOf(dep));
         return withoutBackdropPointers(dep);
       });
       if (!saved) return;

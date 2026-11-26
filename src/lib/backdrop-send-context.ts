@@ -29,6 +29,8 @@ export interface DependantBackdropLink {
   sentDigest?: string;
   /** The slot's sequencing key (`backdropSlotState` reads it); the same slot always has the same key. */
   slotKey: string;
+  /** The paired phone's client key; a re-pair changes it, which makes an already-sent picture worth sending again. */
+  pairing?: string;
   /**
    * Encrypt, upload and publish the already-saved local picture. Never throws.
    * `opts.backfill` marks an automatic resend that yields to any user action on

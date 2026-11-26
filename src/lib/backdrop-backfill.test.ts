@@ -54,6 +54,19 @@ describe('runBackdropBackfill', () => {
     expect(s.uploads).toHaveLength(1);
   });
 
+  it('after an unpair and a re-pair in the same unlock the new phone gets the picture again', async () => {
+    const s = setupEnv();
+    const attempted = new Set<string>();
+    expect(await s.run({ attempted })).toBe(1);
+    // Unpaired: the pointer was cleared and the phone is gone; nothing is sent meanwhile.
+    s.dep.bunkerEndpoint = undefined as never;
+    expect(await s.run({ attempted })).toBe(0);
+    // Re-paired with another phone: the slot reads as unsent again.
+    s.dep.bunkerEndpoint = { authorizedClientPubkey: '9'.repeat(64) };
+    expect(await s.run({ attempted })).toBe(1);
+    expect(s.uploads).toEqual(['persona-pic', 'persona-pic']);
+  });
+
   it('a different picture on the same slot is a new attempt', async () => {
     const s = setupEnv();
     const attempted = new Set<string>();

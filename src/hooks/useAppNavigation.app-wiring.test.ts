@@ -90,7 +90,7 @@ describe('App.tsx dependant-scope wiring', () => {
     expect(count(/\bremoveDependantRecord\(/g)).toBe(1);
     // In a finally: the record is gone before the hook's follow-up steps, so
     // a throw from one of them must still end the scope.
-    expect(app).toMatch(/try \{\s*await removeDependantRecord\(dependantId\);\s*\} finally \{\s*endDependantScope\(dependantId\);\s*\}/);
+    expect(app).toMatch(/try \{\s*await removeDependantRecord\(dependantId, opts\);\s*\} finally \{\s*endDependantScope\(dependantId\);\s*\}/);
     // The hand-off picker goes home: the page underneath belongs to the
     // dependant being switched away from.
     expect(app).toMatch(/onSwitch=\{\(depId\) => \{ handleEnterChildMode\(depId\); setShowHandoffPicker\(false\); navigateTo\('home'\); \}\}/);

@@ -2241,15 +2241,6 @@ function AppContent() {
       setInventoryMergeCount(c => c + 1);
     },
   });
-  // The guardian's card backdrops for this child's personas: fetched while
-  // unlocked on a paired-child install, retried on every inventory apply.
-  useGuardianBackdrops({
-    enabled: preferences.signingMode === 'paired-child' && !!encryptionKey,
-    encryptionKey,
-    identity,
-    mergeCount: inventoryMergeCount,
-  });
-
   const pairedContactPolicy = useChildContactPolicy({
     enabled: isPairedChild && !!encryptionKey, child: preferences.activeAccountId ?? identity?.id ?? null,
     key: encryptionKey, relayUrl: preferences.relayUrl ?? DEFAULT_RELAY_URL,
@@ -2456,6 +2447,16 @@ function AppContent() {
     inventoryPersonas: childLinkInventory,
     withheldSlots: slotResolveOpts.withheld,
     onRecordUpdated: async (r) => { await setPairedChildIdentityApprovals(r.id, r.identityApprovals ?? {}, r.identityPressedAt ?? {}); },
+  });
+  // The guardian's card backdrops for this child's personas: fetched while
+  // unlocked on a paired-child install, retried on every inventory apply. Not
+  // once the guardian has unpaired this phone: `markUnpaired` just dropped the
+  // rows, and the stored slots still name the (deleted) blobs.
+  useGuardianBackdrops({
+    enabled: preferences.signingMode === 'paired-child' && !!encryptionKey && !childDeviceLink.unpaired,
+    encryptionKey,
+    identity,
+    mergeCount: inventoryMergeCount,
   });
 
   // The child's gate (spec §8): the one choke point for sign-in, the child's
