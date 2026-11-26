@@ -43,6 +43,14 @@ describe('IdentityCard backdrop control', () => {
     expect(screen.queryByRole('menuitem', { name: 'Remove' })).toBeNull();
   });
 
+  it('offers no Remove on a locked dependant card', () => {
+    hook.state = { ...base(), link: { name: 'Lily', sent: true }, removeBlocked: true };
+    render(<IdentityCard row={row} resolved={resolved} childMode={false} />);
+    openMenu();
+    expect(screen.getByRole('menuitem', { name: 'Change image' })).toBeTruthy();
+    expect(screen.queryByRole('menuitem', { name: 'Remove' })).toBeNull();
+  });
+
   it('a pick on an own persona confirms with the device-local line', async () => {
     set.mockResolvedValue({ ok: true });
     render(<IdentityCard row={row} resolved={resolved} childMode={false} />);

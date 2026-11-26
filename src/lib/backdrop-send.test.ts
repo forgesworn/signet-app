@@ -241,7 +241,7 @@ describe('buildDependantBackdropLookup', () => {
   const NP = 'a'.repeat(64), PERSONA = 'b'.repeat(64), EXTRA = 'c'.repeat(64), OWN = 'd'.repeat(64);
   const dep = (over: Record<string, unknown> = {}) => ({
     id: PERSONA, displayName: 'Lily', bunkerEndpoint: { authorizedClientPubkey: 'f'.repeat(64) },
-    naturalPerson: { publicKey: NP }, persona: { publicKey: PERSONA }, extraPersonas: [{ publicKey: EXTRA }], ...over,
+    naturalPersonActive: true, naturalPerson: { publicKey: NP, displayName: 'Lily Smith' }, persona: { publicKey: PERSONA }, extraPersonas: [{ publicKey: EXTRA }], ...over,
   });
   function env(over: Partial<BackdropLinkEnv> = {}) {
     const setSlot = vi.fn(async () => ({}));
@@ -276,12 +276,41 @@ describe('buildDependantBackdropLookup', () => {
     expect(buildDependantBackdropLookup(env().e)(PERSONA)!.sent).toBe(false);
   });
 
-  it('a dependant with no phone paired has no link: the backdrop stays on this device and nothing is uploaded', async () => {
-    const { e, upload } = env({ dependants: [dep({ bunkerEndpoint: undefined }), dep({ id: 'x', persona: { publicKey: 'e'.repeat(64) }, bunkerEndpoint: {} })] });
+  it('a dependant with no phone paired still has a link, but it cannot send: nothing is uploaded and the pointer can still be cleared', async () => {
+    const { e, upload, setSlot } = env({ dependants: [dep({ bunkerEndpoint: undefined }), dep({ id: 'x', persona: { publicKey: 'e'.repeat(64) }, bunkerEndpoint: {} })] });
     const lookup = buildDependantBackdropLookup(e);
-    expect(lookup(PERSONA)).toBeNull();
-    expect(lookup('e'.repeat(64))).toBeNull();
+    for (const pk of [PERSONA, 'e'.repeat(64)]) {
+      const link = lookup(pk)!;
+      expect(link.canSend).toBe(false);
+      expect((await link.send(blob)).ok).toBe(false);
+    }
     expect(upload).not.toHaveBeenCalled();
+    await lookup(PERSONA)!.remove();
+    expect(setSlot).toHaveBeenCalledWith(PERSONA, 'persona', null);
+  });
+
+  it('can send exactly where the publisher sends: a paired phone and a visible slot', () => {
+    const lookup = (over: Record<string, unknown>) => buildDependantBackdropLookup(env({ dependants: [dep(over)] }).e);
+    expect(lookup({})(PERSONA)!.canSend).toBe(true);
+    expect(lookup({})(NP)!.canSend).toBe(true);
+    expect(lookup({})(EXTRA)!.canSend).toBe(true);
+    // real identity dormant
+    expect(lookup({ naturalPersonActive: false })(NP)!.canSend).toBe(false);
+    // hidden from the paired device, or removed from the phone
+    expect(lookup({ hiddenOnPairedDeviceKeys: [PERSONA] })(PERSONA)!.canSend).toBe(false);
+    expect(lookup({ childDevice: { removedPersonas: [EXTRA] } })(EXTRA)!.canSend).toBe(false);
+    // a soft-deleted extra
+    expect(lookup({ extraPersonas: [{ publicKey: EXTRA, hidden: true }] })(EXTRA)!.canSend).toBe(false);
+    // other slots are unaffected by one slot's rule
+    expect(lookup({ hiddenOnPairedDeviceKeys: [PERSONA] })(EXTRA)!.canSend).toBe(true);
+  });
+
+  it('reports whether the key is available, so a locked remove can be refused', () => {
+    let key: string | null = null;
+    const lookup = buildDependantBackdropLookup(env({ getKey: () => key }).e);
+    expect(lookup(PERSONA)!.unlocked).toBe(false);
+    key = 'k';
+    expect(lookup(PERSONA)!.unlocked).toBe(true);
   });
 
   it('a child-direct dependant is paired too (the pairing writes authorizedClientPubkey)', () => {

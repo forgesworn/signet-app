@@ -155,14 +155,23 @@ export function resetCardBackdropCacheForTests(): void {
 export function useCardBackdrop(pubkey: string | undefined): {
   url: string | null;
   source: BackdropSource | null;
-  /** The dependant link on a guardian's dependant card; null everywhere else. */
+  /** The dependant link on a guardian's dependant card whose slot is sent to the child; null everywhere else. */
   link: DependantBackdropLink | null;
+  /**
+   * True on a dependant card while the unlock key is gone: Remove cannot clear
+   * the pointer sent to the child, so it is not offered (and `clear` refuses).
+   */
+  removeBlocked: boolean;
   set: (file: File) => Promise<BackdropSetResult>;
   clear: () => Promise<void>;
 } {
   const [entry, setEntry] = useState<Resolved>(() => (pubkey ? resolved.get(pubkey) ?? NONE : NONE));
   const lookup = useContext(DependantBackdropContext);
-  const link = pubkey && lookup ? lookup(pubkey) : null;
+  // Every dependant slot has a link, so Remove can clear a pointer; only a
+  // slot the publisher sends is "linked" as far as the card's copy goes.
+  const slotLink = pubkey && lookup ? lookup(pubkey) : null;
+  const link = slotLink?.canSend ? slotLink : null;
+  const removeBlocked = !!slotLink && !slotLink.unlocked;
 
   useEffect(() => {
     if (!pubkey) { setEntry(NONE); return; }
@@ -199,12 +208,18 @@ export function useCardBackdrop(pubkey: string | undefined): {
 
   const clear = useCallback(async () => {
     if (!pubkey) return;
+    // Locked: the pointer on the dependant's slot cannot be cleared, and
+    // dropping only the local copy would leave it behind.
+    if (slotLink && !slotLink.unlocked) return;
+    // Started first (its ordering step runs synchronously), so a send still
+    // uploading is outranked before the local picture goes.
+    const removal = slotLink ? slotLink.remove() : undefined;
     await deleteCardBackdrop(pubkey);
     // Re-resolve rather than blank: on a child's phone the guardian's picture
     // takes over again once the child's own is gone.
     await refreshCardBackdrop(pubkey);
-    if (link) await link.remove();
-  }, [pubkey, link]);
+    await removal;
+  }, [pubkey, slotLink]);
 
-  return { url: entry.url, source: entry.source, link, set, clear };
+  return { url: entry.url, source: entry.source, link, removeBlocked, set, clear };
 }

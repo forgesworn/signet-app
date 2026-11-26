@@ -50,7 +50,7 @@ export function CardBackdropRow({ pubkey }: { pubkey: string }) {
         <button className="btn btn-ghost btn-sm" disabled={busy} onClick={() => { setError(''); armPickerGrace(); inputRef.current?.click(); }}>
           {busy ? 'Saving…' : backdrop.url ? 'Change' : 'Set'}
         </button>
-        {backdrop.url && backdrop.source !== 'guardian' && (
+        {backdrop.url && backdrop.source !== 'guardian' && !backdrop.removeBlocked && (
           <button className="btn btn-ghost btn-sm" disabled={busy} style={{ color: 'var(--text-muted)' }}
             onClick={() => { setError(''); setSendNote(''); void backdrop.clear(); }}>
             Remove

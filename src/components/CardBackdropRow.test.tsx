@@ -43,6 +43,12 @@ describe('CardBackdropRow copy', () => {
     expect(screen.queryByRole('button', { name: 'Remove' })).toBeNull();
   });
 
+  it('no Remove while the dependant record is locked, so a sent pointer cannot be left behind', () => {
+    hook.state = { ...base(), link: { name: 'Lily', sent: true, send: vi.fn(), remove: vi.fn() }, removeBlocked: true };
+    render(<CardBackdropRow pubkey="a" />);
+    expect(screen.queryByRole('button', { name: 'Remove' })).toBeNull();
+  });
+
   it('child\'s phone, own pick showing: the device-local line and a Remove', () => {
     render(<CardBackdropRow pubkey="a" />);
     expect(screen.getByRole('button', { name: 'Remove' })).toBeTruthy();

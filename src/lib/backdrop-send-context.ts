@@ -8,10 +8,21 @@ export type BackdropSendResult = { ok: true } | { ok: false; reason: string };
  * App on a guardian's install only. A card whose pubkey is not a dependant slot
  * of this guardian (or any card on a paired-child install) has no link, so the
  * backdrop stays purely device-local there.
+ *
+ * A dependant's slot always has a link so that Remove can clear a pointer the
+ * slot still holds; `canSend` says whether the publisher actually sends it.
  */
 export interface DependantBackdropLink {
   /** The dependant's display name, for copy ("Not sent to <name>'s phone"). */
   name: string;
+  /**
+   * True when a phone is paired and the inventory publisher sends this slot
+   * (the same visibility rule: real identity active, not hidden from or removed
+   * from the paired device). When false the backdrop is device-local only.
+   */
+  canSend: boolean;
+  /** False while the unlock key is gone: the dependant record cannot be written, so Remove is not offered. */
+  unlocked: boolean;
   /** True when the slot already names an encrypted copy for the child. */
   sent: boolean;
   /** Encrypt, upload and publish the already-saved local picture. Never throws. */

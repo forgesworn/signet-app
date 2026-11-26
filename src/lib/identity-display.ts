@@ -1,4 +1,4 @@
-import type { SignetIdentity, DependantIdentity, AppPreferences } from '../types';
+import type { SignetIdentity, AppPreferences } from '../types';
 
 /**
  * Which keypair the carousel focuses on app load.
@@ -35,11 +35,12 @@ export const REAL_IDENTITY_DORMANT_PRIMARY_COPY = "Your real identity isn't set 
  * before the field existed derives its answer from the NP display name, so
  * every existing dependant lifts to active and nothing about them moves.
  *
- * Takes the narrow `Pick` rather than the whole record so the approval screens,
- * whose `dependants` prop is already a projection, can call it without a cast.
+ * Takes only the two fields it reads (any `naturalPerson` with a `displayName`)
+ * rather than the whole record so the approval screens, whose `dependants`
+ * prop is already a projection, can call it without a cast.
  */
-export function isDependantNaturalPersonActive(
-  dep: Pick<DependantIdentity, 'naturalPerson' | 'naturalPersonActive'>,
+export function isDependantNaturalPersonActive<NP extends { displayName: string }>(
+  dep: { naturalPerson: NP; naturalPersonActive?: boolean },
 ): boolean {
   return dep.naturalPersonActive ?? dep.naturalPerson.displayName.trim() !== '';
 }

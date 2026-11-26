@@ -206,7 +206,7 @@ describe('a guardian\'s dependant card sends the backdrop on', () => {
       createElement(DependantBackdropContext.Provider, { value: (pk: string) => (pk === PK ? link : null) }, children);
   }
   const mkLink = (over: Partial<DependantBackdropLink> = {}): DependantBackdropLink => ({
-    name: 'Lily', sent: false, send: vi.fn(async () => ({ ok: true as const })), remove: vi.fn(async () => undefined), ...over,
+    name: 'Lily', canSend: true, unlocked: true, sent: false, send: vi.fn(async () => ({ ok: true as const })), remove: vi.fn(async () => undefined), ...over,
   });
 
   it('saves locally first, then sends the stored blob and reports how it went', async () => {
@@ -243,6 +243,40 @@ describe('a guardian\'s dependant card sends the backdrop on', () => {
     await act(async () => { await result.current.clear(); });
     expect(store.rows.has(PK)).toBe(false);
     expect(link.remove).toHaveBeenCalledTimes(1);
+  });
+
+  it('a link that cannot send (no phone paired, or a slot the publisher skips): nothing is sent, no link is shown, but Remove still clears the pointer', async () => {
+    const link = mkLink({ canSend: false });
+    const { result } = renderHook(() => useCardBackdrop(PK), { wrapper: withLink(link) });
+    let out!: Awaited<ReturnType<typeof result.current.set>>;
+    await act(async () => { out = await result.current.set(imageFile()); });
+    expect(out).toEqual({ ok: true });
+    expect(link.send).not.toHaveBeenCalled();
+    expect(result.current.link).toBeNull();
+    await act(async () => { await result.current.clear(); });
+    expect(store.rows.has(PK)).toBe(false);
+    expect(link.remove).toHaveBeenCalledTimes(1);
+  });
+
+  it('while locked, Remove is blocked and clear() leaves both the picture and the pointer alone', async () => {
+    const link = mkLink({ unlocked: false });
+    const { result } = renderHook(() => useCardBackdrop(PK), { wrapper: withLink(link) });
+    await act(async () => { await result.current.set(imageFile()); });
+    expect(result.current.removeBlocked).toBe(true);
+    await act(async () => { await result.current.clear(); });
+    expect(store.rows.has(PK)).toBe(true);
+    expect(link.remove).not.toHaveBeenCalled();
+  });
+
+  it('starts the remote remove before the local delete, so a send still uploading is outranked at once', async () => {
+    const order: string[] = [];
+    const link = mkLink({ remove: vi.fn(async () => { order.push('remove-called'); }) });
+    const { result } = renderHook(() => useCardBackdrop(PK), { wrapper: withLink(link) });
+    await act(async () => { await result.current.set(imageFile()); });
+    const { deleteCardBackdrop } = await import('../lib/db');
+    (deleteCardBackdrop as ReturnType<typeof vi.fn>).mockImplementationOnce(async () => { order.push('local-delete'); store.rows.delete(PK); });
+    await act(async () => { await result.current.clear(); });
+    expect(order).toEqual(['remove-called', 'local-delete']);
   });
 
   it('with no link (own persona, or a paired-child install) nothing is sent and no send result is returned', async () => {

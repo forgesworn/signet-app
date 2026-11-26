@@ -16,6 +16,9 @@ import { deleteReplacedBackdrop, type DeleteOutcome } from './blob-deletion';
 import { uploadBackdrop, type BackdropMetadata } from './backdrop-blob';
 import { BACKDROP_COPY } from './child-device-copy';
 import type { BackdropSendResult } from './backdrop-send-context';
+import { pairedDeviceAllows } from './paired-device-personas';
+import { isDependantNaturalPersonActive } from './identity-display';
+import type { DependantIdentity } from '../types';
 
 export interface BackdropSendDeps {
   /**
@@ -156,15 +159,17 @@ export interface BackdropLinkEnv {
   upload?: BackdropSendDeps['upload'];
 }
 
+type SlotFields = { backdropHash?: string; backdropKey?: string; backdropBlossomUrl?: string };
+
 /** The part of a dependant the lookup reads. */
-export interface DependantSlotsView {
+export interface DependantSlotsView extends Pick<DependantIdentity, 'hiddenOnPairedDeviceKeys' | 'childDevice' | 'naturalPersonActive'> {
   id: string;
   displayName: string;
   /** A phone is paired when `authorizedClientPubkey` is set (phone-paired and child-direct both write it): the publisher's own gate. */
   bunkerEndpoint?: { authorizedClientPubkey?: string };
-  naturalPerson: { publicKey: string; backdropHash?: string; backdropKey?: string; backdropBlossomUrl?: string };
-  persona: { publicKey: string; backdropHash?: string; backdropKey?: string; backdropBlossomUrl?: string };
-  extraPersonas?: ReadonlyArray<{ publicKey: string; backdropHash?: string; backdropKey?: string; backdropBlossomUrl?: string }>;
+  naturalPerson: { publicKey: string; displayName: string } & SlotFields;
+  persona: { publicKey: string } & SlotFields;
+  extraPersonas?: ReadonlyArray<{ publicKey: string; hidden?: boolean } & SlotFields>;
 }
 
 /**
@@ -174,26 +179,34 @@ export interface DependantSlotsView {
  * same dependant's persona cards in child mode on the guardian's phone both
  * link. Persona is matched before the real-name slot, so a key shared by both
  * (an imported persona) is the persona. A card that is not a dependant slot
- * gets null, as does a dependant with no phone paired yet and everything on a
- * paired-child install.
+ * gets null, as does everything on a paired-child install.
+ *
+ * Every slot of a dependant gets a link, paired or not: Remove must be able to
+ * clear a pointer the slot still holds. `canSend` is the publisher's own rule
+ * (`usePersonaInventoryPublisher`): a phone is paired, and the slot is one the
+ * publisher sends (`pairedDeviceAllows`, real identity active).
  */
 export function buildDependantBackdropLookup(env: BackdropLinkEnv): (pubkey: string) => import('./backdrop-send-context').DependantBackdropLink | null {
   if (env.isPairedChild) return () => null;
   return (pubkey: string) => {
     if (!pubkey) return null;
     for (const dep of env.dependants) {
-      // No phone paired: the inventory goes to nobody, so there is nothing to
-      // send to and the backdrop stays device-local ("Only on this device").
-      if (!dep.bunkerEndpoint?.authorizedClientPubkey) continue;
+      const allows = pairedDeviceAllows(dep);
       let target: string | null = null;
-      let slot: { backdropHash?: string; backdropKey?: string; backdropBlossomUrl?: string } | undefined;
-      if (dep.persona.publicKey === pubkey) { target = 'persona'; slot = dep.persona; }
-      else if (dep.naturalPerson.publicKey === pubkey) { target = 'natural-person'; slot = dep.naturalPerson; }
-      else {
+      let slot: SlotFields | undefined;
+      let visible = false;
+      if (dep.persona.publicKey === pubkey) { target = 'persona'; slot = dep.persona; visible = allows(dep.persona.publicKey); }
+      else if (dep.naturalPerson.publicKey === pubkey) {
+        target = 'natural-person'; slot = dep.naturalPerson;
+        visible = isDependantNaturalPersonActive(dep) && allows(dep.naturalPerson.publicKey);
+      } else {
         const extra = dep.extraPersonas?.find(p => p.publicKey === pubkey);
-        if (extra) { target = extra.publicKey; slot = extra; }
+        if (extra) { target = extra.publicKey; slot = extra; visible = allows(extra.publicKey, extra.hidden === true); }
       }
       if (target === null || !slot) continue;
+      // No phone paired: the inventory goes to nobody, so there is nothing to
+      // send to and the backdrop stays device-local ("Only on this device").
+      const canSend = !!dep.bunkerEndpoint?.authorizedClientPubkey && visible;
       const t = target;
       const deps = (): BackdropSendDeps => ({
         slotKey: `${dep.id}:${t}`,
@@ -207,8 +220,12 @@ export function buildDependantBackdropLookup(env: BackdropLinkEnv): (pubkey: str
       });
       return {
         name: dep.displayName,
+        canSend,
+        unlocked: env.getKey() !== null,
         sent: !!(slot.backdropHash && slot.backdropKey && slot.backdropBlossomUrl),
-        send: blob => sendBackdropToChild(blob, deps()),
+        send: blob => (canSend
+          ? sendBackdropToChild(blob, deps())
+          : Promise.resolve<BackdropSendResult>({ ok: false, reason: BACKDROP_COPY.reasons.failed })),
         remove: () => removeBackdropFromChild(deps()),
       };
     }

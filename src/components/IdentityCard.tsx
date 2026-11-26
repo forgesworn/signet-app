@@ -361,7 +361,7 @@ export function IdentityCard({ onHandshake, row, resolved, childMode, foreign = 
                 Change image
               </button>
               {/* The guardian's picture is theirs to remove, not the child's. */}
-              {backdrop.source !== 'guardian' && (
+              {backdrop.source !== 'guardian' && !backdrop.removeBlocked && (
                 <button type="button" role="menuitem" onClick={() => { setBackdropMenuOpen(false); void backdrop.clear(); }}>
                   Remove
                 </button>
