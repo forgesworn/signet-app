@@ -16326,8 +16326,8 @@ function AppContent() {
           );
         })()}
       </Carousel>
-      </DependantBackdropContext.Provider>
       {authOverlay}{nip55Overlay}{homeApprovalOverlay}
+      </DependantBackdropContext.Provider>
           {handoffPickerOverlay}
     </>
   );
