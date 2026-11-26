@@ -406,12 +406,45 @@ describe('useDependants.setDependantPersonaBackdrop', () => {
     expect(stored.persona.backdropBlossomUrl).toBeUndefined();
   });
 
-  it('is a no-op for an unknown dependant or slot', async () => {
+  it('refuses an unknown dependant or slot rather than reporting a save that never happened', async () => {
+    const { result, dep } = await setup();
+    await act(async () => {
+      await expect(result.current.setDependantPersonaBackdrop('f'.repeat(64), 'persona', bd('1'))).rejects.toThrow();
+      await expect(result.current.setDependantPersonaBackdrop(dep.id, 'e'.repeat(64), bd('1'))).rejects.toThrow();
+    });
+  });
+
+  it('refuses when there is no guardian pubkey', async () => {
+    const { result } = renderHook(() => useDependants(undefined, undefined, KEY));
+    await waitFor(() => expect(result.current.loading).toBe(false));
+    await act(async () => {
+      await expect(result.current.setDependantPersonaBackdrop('f'.repeat(64), 'persona', bd('1'))).rejects.toThrow();
+    });
+  });
+
+  it('a setter captured before a lock saves nothing once the key is gone', async () => {
+    const g = await seedGuardian(false);
+    const { result, rerender } = renderHook(({ k }: { k: string | null }) => useDependants(g.naturalPerson.publicKey, g.id, k), { initialProps: { k: KEY as string | null } });
+    await waitFor(() => expect(result.current.loading).toBe(false));
+    let dep!: Awaited<ReturnType<typeof result.current.addDependant>>;
+    await act(async () => {
+      dep = await result.current.addDependant('Robin', undefined, { deviceDerive: async () => ({
+        naturalPerson: { publicKey: NP, privateKey: '' as const }, persona: { publicKey: PERSONA, privateKey: '' as const },
+      }) });
+    });
+    const stale = result.current.setDependantPersonaBackdrop;
+    rerender({ k: null });
+    await act(async () => {
+      await expect(stale(dep.id, 'persona', bd('1'))).rejects.toThrow('Encryption key required');
+    });
+    const stored = (await getDependants(g.naturalPerson.publicKey, KEY))[0];
+    expect(stored.persona.backdropHash).toBeUndefined();
+  });
+
+  it('clearing a slot that names nothing is a no-op success', async () => {
     const { result, dep } = await setup();
     let out!: Awaited<ReturnType<typeof result.current.setDependantPersonaBackdrop>>;
-    await act(async () => { out = await result.current.setDependantPersonaBackdrop('f'.repeat(64), 'persona', bd('1')); });
-    expect(out).toEqual({});
-    await act(async () => { out = await result.current.setDependantPersonaBackdrop(dep.id, 'e'.repeat(64), bd('1')); });
+    await act(async () => { out = await result.current.setDependantPersonaBackdrop(dep.id, 'persona', null); });
     expect(out).toEqual({});
   });
 });

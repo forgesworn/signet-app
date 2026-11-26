@@ -72,6 +72,12 @@ export function useDependants(
   // false after the first, keyless, read and never comes back.
   const [loadedWithKey, setLoadedWithKey] = useState(false);
   const loadSeqRef = useRef(0);
+  // The key as of the latest render. A setter that awaits slow work (an upload
+  // finishing) holds the key of the render that created it; after a lock that
+  // closure would still save with the old key and push decrypted records into
+  // state AFTER the lock cleared them. Compare against this before writing.
+  const liveKeyRef = useRef(encryptionKey);
+  useEffect(() => { liveKeyRef.current = encryptionKey; }, [encryptionKey]);
 
   /**
    * Shared lift + sort step used by both effect-driven `loadDependants`
@@ -579,6 +585,8 @@ export function useDependants(
    * landed meanwhile. Resolves with the blob the slot pointed at BEFORE the
    * change, read from that same fresh record, so the caller deletes the right
    * one (and only after this save, so the row no longer references it).
+   * Throws (never resolves as if saved) when the key is gone or the dependant
+   * or slot no longer exists, so the caller deletes the blob it just uploaded.
    */
   const setDependantPersonaBackdrop = useCallback(async (
     depPubkey: string,
@@ -586,17 +594,20 @@ export function useDependants(
     backdrop: { hash: string; blossomUrl: string; keyHex: string; updatedAt: number } | null,
   ): Promise<{ previous?: { hash: string; server: string } }> => {
     if (!encryptionKey) throw new Error('Encryption key required');
-    if (!guardianPubkey) return {};
+    if (!guardianPubkey) throw new Error('No guardian identity');
     const all = await getDependants(guardianPubkey, encryptionKey);
     const dep = all.find(d => d.id === depPubkey);
-    if (!dep) return {};
+    if (!dep) throw new Error('Dependant not found');
     const slot = target === 'natural-person' ? dep.naturalPerson
       : target === 'persona' ? dep.persona
       : (dep.extraPersonas ?? []).find(p => p.publicKey === target);
-    if (!slot) return {};
+    if (!slot) throw new Error('Persona not found');
+    if (liveKeyRef.current !== encryptionKey) throw new Error('Encryption key required');
     const previous = slot.backdropHash && slot.backdropBlossomUrl
       ? { hash: slot.backdropHash, server: slot.backdropBlossomUrl }
       : undefined;
+    // Clearing a slot that names nothing has nothing to save.
+    if (!backdrop && !previous && !slot.backdropKey) return {};
     const patch = backdrop
       ? { backdropHash: backdrop.hash, backdropBlossomUrl: backdrop.blossomUrl, backdropKey: backdrop.keyHex, backdropUpdatedAt: backdrop.updatedAt }
       : { backdropHash: undefined, backdropBlossomUrl: undefined, backdropKey: undefined, backdropUpdatedAt: undefined };
@@ -609,7 +620,8 @@ export function useDependants(
       updated = { ...dep, extraPersonas: (dep.extraPersonas ?? []).map(p => (p.publicKey === target ? { ...p, ...patch } : p)) };
     }
     await saveDependant(updated, encryptionKey);
-    await loadDependants();
+    // Locked while saving: the lock effect owns state now; do not reload into it.
+    if (liveKeyRef.current === encryptionKey) await loadDependants();
     return { previous };
   }, [guardianPubkey, encryptionKey, loadDependants]);
 

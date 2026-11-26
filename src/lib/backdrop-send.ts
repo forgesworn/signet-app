@@ -18,8 +18,14 @@ import { BACKDROP_COPY } from './child-device-copy';
 import type { BackdropSendResult } from './backdrop-send-context';
 
 export interface BackdropSendDeps {
-  /** The live unlock key; null while locked. */
+  /** The unlock key the send started under; null while locked. */
   encryptionKey: string | null;
+  /**
+   * The LIVE unlock key, read again once the upload lands. An upload takes
+   * seconds and hide = lock, so the app may have locked (or re-unlocked under
+   * another key) meanwhile; the slot is then neither saved nor reloaded into state.
+   */
+  getKey?: () => string | null;
   blossomUrl: string | undefined;
   blossomConsent: boolean;
   upload?: (blob: Blob, url: string, consent: boolean, key: string) => Promise<BackdropMetadata>;
@@ -59,12 +65,23 @@ export async function sendBackdropToChild(
     return { ok: false, reason: reasonFor(err) };
   }
 
+  // The new blob is an orphan nothing references until the pointer lands.
+  const discard = () => { void deps.deleteBlob(BACKDROP_UPLOADER_DOMAIN, meta.hash, meta.blossomUrl).catch(() => undefined); };
+
+  const liveKey = deps.getKey ? deps.getKey() : deps.encryptionKey;
+  if (liveKey === null || liveKey !== deps.encryptionKey) {
+    // Locked mid-upload. Deleting needs the unlock key (the uploader secret is
+    // sealed under it), so while locked this attempt is a silent no-op and the
+    // blob stays on the server as an unreferenced, encrypted orphan.
+    discard();
+    return { ok: false, reason: BACKDROP_COPY.reasons.locked };
+  }
+
   let previous: { hash: string; server: string } | undefined;
   try {
     ({ previous } = await deps.saveSlot(meta));
   } catch {
-    // The pointer never landed, so the new blob is an orphan nothing references.
-    void deps.deleteBlob(BACKDROP_UPLOADER_DOMAIN, meta.hash, meta.blossomUrl).catch(() => undefined);
+    discard();
     return { ok: false, reason: BACKDROP_COPY.reasons.failed };
   }
 
@@ -139,6 +156,7 @@ export function buildDependantBackdropLookup(env: BackdropLinkEnv): (pubkey: str
       const t = target;
       const deps = (): BackdropSendDeps => ({
         encryptionKey: env.getKey(),
+        getKey: env.getKey,
         blossomUrl: env.blossomUrl,
         blossomConsent: env.blossomConsent,
         upload: env.upload,

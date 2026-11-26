@@ -100,6 +100,35 @@ describe('sendBackdropToChild', () => {
   });
 });
 
+describe('an upload that spans a lock', () => {
+  it('saves nothing when the app locked while uploading, and does not reload state', async () => {
+    let key: string | null = 'unlock-key';
+    const { d } = deps({ getKey: () => key, upload: vi.fn(async () => { key = null; return META; }) });
+    expect(await sendBackdropToChild(blob, d)).toEqual({ ok: false, reason: BACKDROP_COPY.reasons.locked });
+    expect(d.saveSlot).not.toHaveBeenCalled();
+  });
+
+  it('tries to delete the uploaded blob (a no-op while locked, since the uploader secret needs the key)', async () => {
+    let key: string | null = 'unlock-key';
+    const { d } = deps({ getKey: () => key, upload: vi.fn(async () => { key = null; return META; }) });
+    await sendBackdropToChild(blob, d);
+    expect(d.deleteBlob).toHaveBeenCalledWith(BACKDROP_UPLOADER_DOMAIN, H2, SERVER);
+  });
+
+  it('a different key after the upload counts as a lock too', async () => {
+    let key: string | null = 'unlock-key';
+    const { d } = deps({ getKey: () => key, upload: vi.fn(async () => { key = 'other-key'; return META; }) });
+    expect((await sendBackdropToChild(blob, d)).ok).toBe(false);
+    expect(d.saveSlot).not.toHaveBeenCalled();
+  });
+
+  it('an unchanged key saves as normal', async () => {
+    const { d } = deps({ getKey: () => 'unlock-key' });
+    expect((await sendBackdropToChild(blob, d)).ok).toBe(true);
+    expect(d.saveSlot).toHaveBeenCalledWith(META);
+  });
+});
+
 describe('removeBackdropFromChild', () => {
   it('clears the slot, then deletes the blob it pointed at', async () => {
     const { d, order } = deps();
