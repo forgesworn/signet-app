@@ -34,6 +34,7 @@ import { subscribePersonaInventory, type PersonaInventoryPayload, type PersonaIn
 // the bunker URI's endpoint on a legacy pairing, the rail key on a direct one.
 import { guardianRailPubkey } from '../lib/paired-child-rail';
 import * as db from '../lib/db';
+import { sanitizeDisplayName } from '../lib/text-sanitize';
 
 const STRICT_HEX64 = /^[0-9a-f]{64}$/;
 
@@ -191,9 +192,10 @@ export async function mergeInventory(
   // (Phase 1) picks them up and renders the decrypted blob. All-or-nothing
   // semantics: if any of hash/url/key is missing the field stays absent on
   // the merged record. The kid's NP slot is mostly a stub (no signing
-  // key here) — we keep `naturalPerson.publicKey/privateKey/displayName`
-  // from the stored seed but accept any new avatar fields the publisher
-  // sent, since those CAN change between syncs.
+  // key here) — we keep `naturalPerson.privateKey` empty, take the key and
+  // the name from the wire entry (it exists only while the real identity is
+  // active), and accept any new avatar fields the publisher sent, since
+  // those CAN change between syncs.
   // Merge publicProfile config from the wire onto the kid's slot, PRESERVING
   // kid-local publication state fields (`lastEventId`, `lastPublishedAt`,
   // `lastPublishedRelay`). The guardian owns the configuration; the kid
@@ -285,6 +287,12 @@ export async function mergeInventory(
           // A61: the payload's key is authoritative, so a dormant (empty)
           // or stub NP slot picks up the real key once it is activated.
           publicKey: wireNaturalPerson.publicKey,
+          // The inventory entry exists only while the guardian has the real
+          // identity active, and this merge activates the slot with it
+          // (`naturalPersonActive` below), so its name belongs here: a rename
+          // reaches the child. An empty wire name never blanks a stored one.
+          // With no wire entry the slot is dormant and nameless (cleared below).
+          displayName: sanitizeDisplayName(wireNaturalPerson.displayName, 100) || stored.naturalPerson.displayName,
           avatarHash: wireNaturalPerson.avatarHash,
           avatarBlossomUrl: wireNaturalPerson.avatarBlossomUrl,
           avatarKey: wireNaturalPerson.avatarKey,
