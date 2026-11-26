@@ -324,6 +324,12 @@ describe('buildDependantBackdropLookup', () => {
     expect(lookup({ hiddenOnPairedDeviceKeys: [PERSONA] })(EXTRA)!.canSend).toBe(true);
   });
 
+  it('a dependant that does not match is never inspected (a keyless or odd record cannot throw)', () => {
+    const odd = { id: 'z', displayName: 'Odd', persona: { publicKey: 'e'.repeat(64) }, naturalPerson: { publicKey: 'f'.repeat(64) }, hiddenOnPairedDeviceKeys: 'sealed' } as never;
+    expect(() => buildDependantBackdropLookup(env({ dependants: [odd, dep()] }).e)(PERSONA)).not.toThrow();
+    expect(buildDependantBackdropLookup(env({ dependants: [odd, dep()] }).e)(PERSONA)!.canSend).toBe(true);
+  });
+
   it('reports whether the key is available, so a locked remove can be refused', () => {
     let key: string | null = null;
     const lookup = buildDependantBackdropLookup(env({ getKey: () => key }).e);

@@ -98,6 +98,13 @@ describe('usePersonaInventoryPublisher — what goes to the paired phone', () =>
       }
     });
 
+    it('never puts the device-local sent digest on the wire', async () => {
+      const d = withBackdrop(dep(), { ...bd(), backdropSentDigest: '5a'.repeat(32) } as ReturnType<typeof bd>);
+      renderHook(() => usePersonaInventoryPublisher({ dependants: [d], relayUrl: RELAY, encryptionKey: 'k' }));
+      await waitFor(() => expect(mPublish).toHaveBeenCalledTimes(1), { timeout: 3000 });
+      expect(JSON.stringify(sent())).not.toMatch(/SentDigest|5a5a5a5a/);
+    });
+
     it('child-direct (a phone paired straight to a Heartwood) gets the backdrop fields too', async () => {
       // Fixture shape = what `useChildDevicePairing` writes on a direct pairing:
       // `bunkerEndpoint.authorizedClientPubkey` is the child's client key and

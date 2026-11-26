@@ -196,19 +196,22 @@ export function buildDependantBackdropLookup(env: BackdropLinkEnv): (pubkey: str
   return (pubkey: string) => {
     if (!pubkey) return null;
     for (const dep of env.dependants) {
-      const allows = pairedDeviceAllows(dep);
       let target: string | null = null;
       let slot: SlotFields | undefined;
-      let visible = false;
-      if (dep.persona.publicKey === pubkey) { target = 'persona'; slot = dep.persona; visible = allows(dep.persona.publicKey); }
+      let softDeleted = false;
+            if (dep.persona.publicKey === pubkey) { target = 'persona'; slot = dep.persona; }
       else if (dep.naturalPerson.publicKey === pubkey) {
         target = 'natural-person'; slot = dep.naturalPerson;
-        visible = isDependantNaturalPersonActive(dep) && allows(dep.naturalPerson.publicKey);
       } else {
         const extra = dep.extraPersonas?.find(p => p.publicKey === pubkey);
-        if (extra) { target = extra.publicKey; slot = extra; visible = allows(extra.publicKey, extra.hidden === true); }
+        if (extra) { target = extra.publicKey; slot = extra; softDeleted = extra.hidden === true; }
       }
       if (target === null || !slot) continue;
+      // Only for the matched dependant, so an unrelated record can never throw here.
+      const allows = pairedDeviceAllows(dep);
+      const visible = target === 'natural-person'
+        ? isDependantNaturalPersonActive(dep) && allows(pubkey)
+        : allows(pubkey, softDeleted);
       // No phone paired: the inventory goes to nobody, so there is nothing to
       // send to and the backdrop stays device-local ("Only on this device").
       const canSend = !!dep.bunkerEndpoint?.authorizedClientPubkey && visible;
