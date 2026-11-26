@@ -166,6 +166,10 @@ export const CHILD_SIDE_COPY = {
   addDependantRefused: "This phone belongs to a child's account, so it cannot add someone to a family. Ask your guardian to do it on their phone.",
   /** A42: guardian-managed acts refused on a child's phone. */
   guardianManages: 'Your guardian looks after this for you, on their phone.',
+  /** A child's phone never publishes, retracts or edits a persona's public Nostr profile. */
+  publicProfileGuardianOnly: 'Only your guardian can publish a public profile, from their phone.',
+  /** A child's phone never renames a persona, or adds one. */
+  namesGuardianManaged: "Your guardian manages your personas' names.",
   /** A40: nostrconnect:// on a direct child. */
   connectNotServed: 'This identity cannot connect apps on this phone right now. Check your Heartwood is connected, then try again.',
 } as const;

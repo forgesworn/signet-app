@@ -745,7 +745,7 @@ function AppContent() {
   // `no-store`, so each update() reliably picks up the new worker.
   const { needRefresh, updateServiceWorker } = useSwUpdate();
 
-  const { identity, loading: identityLoading, create, restore, restoreWithProfile, importNsec, importLiteMnemonic, addImportedPersona, addImportedPersonas, addHeartwoodKeyPersona, markBackedUp, switchPrimary, activateNaturalPerson, updatePhoto, updateDisplayName, addPersona, setExtraPersonaHidden, removeExtraPersona, reorderExtraPersonas, applyRemotePersonas, setPersonaAvatar, clearPersonaAvatar, setPersonaContactAvatar, clearPersonaContactAvatar, setPersonaPublicProfile, clearPersonaPublicProfile, setSlotNip05Check, setSlotFollowsImport, reload: reloadIdentity } = useIdentity(encryptionKey);
+  const { identity, loading: identityLoading, create, restore, restoreWithProfile, importNsec, importLiteMnemonic, addImportedPersona, addImportedPersonas, addHeartwoodKeyPersona, markBackedUp, switchPrimary, activateNaturalPerson, updatePhoto, updateDisplayName: updateDisplayNameRaw, addPersona: addPersonaRaw, setExtraPersonaHidden, removeExtraPersona, reorderExtraPersonas, applyRemotePersonas, setPersonaAvatar, clearPersonaAvatar, setPersonaContactAvatar, clearPersonaContactAvatar, setPersonaPublicProfile, clearPersonaPublicProfile, setSlotNip05Check, setSlotFollowsImport, reload: reloadIdentity } = useIdentity(encryptionKey);
   const activePubkey = identity ? getActivePubkey(identity) : undefined;
   const npActive = identity ? isNaturalPersonActive(identity) : false;
   // Session-level hide for the Android app promo. Snooze persistence lives in
@@ -800,6 +800,19 @@ function AppContent() {
   // status banner, the contacts-v2 import scope and every `isPairedChild ?`
   // branch below read THIS const — never a second copy of the same test.
   const isPairedChild = preferences.signingMode === 'paired-child';
+
+  // A child's phone never renames a persona or adds one: the guardian names
+  // and creates them on their phone (the persona inventory brings them here).
+  // The UI already withholds both; these are the second lock, so no screen,
+  // deep link or future caller can reach the writes.
+  const updateDisplayName = useCallback((...args: Parameters<typeof updateDisplayNameRaw>): ReturnType<typeof updateDisplayNameRaw> => {
+    if (isPairedChild) return Promise.reject(new Error(CHILD_SIDE_COPY.namesGuardianManaged));
+    return updateDisplayNameRaw(...args);
+  }, [isPairedChild, updateDisplayNameRaw]);
+  const addPersona = useCallback((...args: Parameters<typeof addPersonaRaw>): ReturnType<typeof addPersonaRaw> => {
+    if (isPairedChild) return Promise.reject(new Error(CHILD_SIDE_COPY.guardianManages));
+    return addPersonaRaw(...args);
+  }, [isPairedChild, addPersonaRaw]);
 
   // M1 (2026-07-02 audit): AppPreferences.bunkerUri carries a reusable
   // NIP-46 reauth secret and is encrypted at rest (see db.savePreferences).
@@ -7450,7 +7463,8 @@ function AppContent() {
     // A42: a direct child signs nothing here — its slots live on the family
     // Heartwood behind the gate, and the guardian manages their profiles.
     // The whole block is opt-in: a phone-only removal publishes nothing.
-    if (takeDownOnNostr && identity && !childDirect) {
+    // A paired child's phone holds none of the guardian's published profiles to take down.
+    if (takeDownOnNostr && identity && !childDirect && !isPairedChild) {
       const relayUrl = preferences.relayUrl ?? DEFAULT_RELAY_URL;
       const retractions: Array<Promise<unknown>> = [];
 
@@ -8216,6 +8230,8 @@ function AppContent() {
     if (!identity) return { ok: false, message: 'No identity loaded.' };
     // A42: never from a direct child's phone.
     if (childDirect) return { ok: false, message: CHILD_SIDE_COPY.guardianManages };
+    // A public profile is published only from the guardian's phone, never a child's.
+    if (isPairedChild) return { ok: false, message: CHILD_SIDE_COPY.publicProfileGuardianOnly };
     const relayUrl = preferences.relayUrl ?? DEFAULT_RELAY_URL;
 
 	    // Resolve the slot config + state + signing key.
@@ -8416,7 +8432,7 @@ function AppContent() {
       if (nameFromRelay) await updateDisplayName(slotTarget, nameFromRelay);
     }
     return { ok: true };
-	  }, [identity, dependants, preferences.relayUrl, preferences.signingMode, setPersonaPublicProfile, setDependantPersonaPublicProfile, updateDisplayName, syncRelays, encryptionKey, bunkerRouter, requestAuth, signerStatus, routerProbeState, childDirect, askRelayProfileChoice]);
+	  }, [identity, dependants, preferences.relayUrl, preferences.signingMode, setPersonaPublicProfile, setDependantPersonaPublicProfile, updateDisplayName, syncRelays, encryptionKey, bunkerRouter, requestAuth, signerStatus, routerProbeState, childDirect, isPairedChild, askRelayProfileChoice]);
 
   /**
    * Phase 2F shared retract helper. Mirror of `publishPersonaProfile`:
@@ -8436,6 +8452,7 @@ function AppContent() {
   ): Promise<void> => {
     if (!identity) return;
     if (childDirect) return; // A42
+    if (isPairedChild) throw new Error(CHILD_SIDE_COPY.publicProfileGuardianOnly);
     let slot:
       | { publicKey: string; privateKey: string; publicProfile?: import('./types').PersonaPublicProfile }
       | undefined;
@@ -8485,7 +8502,7 @@ function AppContent() {
     } else {
       await clearPersonaPublicProfile(slotTarget);
     }
-  }, [identity, dependants, preferences.relayUrl, clearDependantPersonaPublicProfile, clearPersonaPublicProfile, bunkerRouter, childDirect]);
+  }, [identity, dependants, preferences.relayUrl, clearDependantPersonaPublicProfile, clearPersonaPublicProfile, bunkerRouter, childDirect, isPairedChild]);
 
   const handleRetryConnect = useCallback(async () => {
     if (!encryptionKey) return;
@@ -12936,7 +12953,8 @@ function AppContent() {
       <Layout title="Profile" showBack onBack={() => navigateBack()} {...guardianLayoutProps}>
         <Profile
           identity={identity!}
-          onUpdateName={async (name) => { await updateDisplayName(name, encryptionKey!); }}
+          onUpdateName={async (name) => { await updateDisplayName('natural-person', name); }}
+          nameManagedNote={isPairedChild ? CHILD_SIDE_COPY.namesGuardianManaged : undefined}
           onUpdatePhoto={() => navigateTo('photo-capture')}
           ownBadge={ownBadge}
           knownPlaceCount={knownPlaceCountActive}
@@ -13524,6 +13542,7 @@ function AppContent() {
         onDisablePublicProfile={async () => {
           await retractPersonaProfile(slotTarget, depPubkey);
         }}
+        publicProfileGuardianOnly={isPairedChild}
         onRepublish={async () => {
           // Republish is the already-enabled path: same publisher, no
           // confirm modal (PersonaAdvanced fires this directly). The
@@ -13617,9 +13636,9 @@ function AppContent() {
             await retractPersonaProfile(pubkey, depPubkey);
           } catch { /* §6.10 best-effort */ }
         }}
-        onDeletePersona={async (pubkey) => {
+        onDeletePersona={isPairedChild ? undefined : async (pubkey) => {
           // A42: a child's personas are the guardian's to remove.
-          if (childDirect) throw new Error(CHILD_SIDE_COPY.guardianManages);
+          if (childDirect || isPairedChild) throw new Error(CHILD_SIDE_COPY.guardianManages);
           // §9 Q8: 5s race budget for retract-before-purge, then hard-delete.
           // Resolve the extra to check for a published profile we should
           // try to retract first.
@@ -14777,7 +14796,8 @@ function AppContent() {
       preferPersonaForSignIns,
       preferredPersonaPubkey,
       originMemory: originPolicyForRequest,
-      onAddPersona: async (displayName: string) => {
+      // A child's phone cannot add personas (the guardian does), so the picker must not offer the button.
+      onAddPersona: isPairedChild ? undefined : async (displayName: string) => {
         const key = encryptionKey || await requestAuth({ purpose: 'mutate-persona', action: 'create', personaName: displayName });
         if (!key) throw new Error('Authentication required');
         return addPersona(displayName, key, { deviceDerive: extraPersonaDeviceDeriveTracked });
@@ -16026,7 +16046,7 @@ function AppContent() {
         dependantsCount={dependants.length}
         isPairedChild={isPairedChild}
         blurIdentityNames={blurIdentityNames}
-        onRenameActive={async (target, name) => {
+        onRenameActive={isPairedChild ? undefined : async (target, name) => {
           // `target` is the slot of the row that was edited (Carousel resolves
           // it via `resolveRenameTarget`), NOT `identity.primaryKeypair` — on a
           // persona-primary install those differ, and naming a nameless real
@@ -16040,6 +16060,7 @@ function AppContent() {
         // the kind-0 editor + name editor inline. Phase 3 of the persona-
         // card-as-source-of-truth refactor. ───
         onSavePersonaConfig={async (target, config) => {
+          if (isPairedChild) throw new Error(CHILD_SIDE_COPY.publicProfileGuardianOnly);
           if (!identity) return;
           let currentState: import('./types').PersonaPublicProfile | undefined;
           if (target === 'natural-person') currentState = identity.naturalPerson.publicProfile;
@@ -16053,8 +16074,9 @@ function AppContent() {
           if (!result.ok) throw new Error(result.message || 'Republish failed.');
         }}
         // R2/R4: picture/banner blobs this install uploaded and no stored slot references any more.
-        onDeletePublicBlob={(hash, server) => deleteOwnBlob(PUBLIC_PICTURE_UPLOADER_DOMAIN, hash, server)}
+        onDeletePublicBlob={isPairedChild ? undefined : (hash, server) => deleteOwnBlob(PUBLIC_PICTURE_UPLOADER_DOMAIN, hash, server)}
         onUploadPersonaPicture={async (file, kind, crop) => {
+          if (isPairedChild) throw new Error(CHILD_SIDE_COPY.publicProfileGuardianOnly);
           const blossomUrl = preferences.defaultBlossomUrl ?? DEFAULT_BLOSSOM_URL;
           if (!blossomUrl) throw new Error('Set a Blossom server in Advanced Settings first.');
           if (!blossomConsent) throw new Error('Enable Blossom uploads in Advanced Settings first.');

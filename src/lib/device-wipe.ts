@@ -135,7 +135,8 @@ export function buildDeviceWipeInventory(input: DeviceWipeInput): DeviceWipeInve
 
   let profiles = 0;
   let appGrants = 0;
-  if (identity && !childDirect) {
+  // A paired child's phone holds only a view of the guardian's profiles; it never takes them down.
+  if (identity && !childDirect && signingMode !== 'paired-child') {
     const hasRouter = !!input.hasBunkerRouter;
     const counts = (slot: { privateKey?: string; publicProfile?: { enabled?: boolean; lastEventId?: string } } | undefined): number => {
       const pp = slot?.publicProfile;

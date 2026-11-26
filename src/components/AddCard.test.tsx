@@ -36,3 +36,12 @@ describe('AddCard — Heartwood hold hint', () => {
 it('the hint copy', () => {
   expect(HEARTWOOD_HOLD_TO_FINISH).toBe('Press and hold the button on your Heartwood to finish.');
 });
+
+describe('AddCard — a child\'s phone', () => {
+  it('offers no way to add a persona, only the guardian-manages notice', () => {
+    render(<AddCard context="paired-child" onAddPersona={() => Promise.resolve()} guardianName="Mum" />);
+    expect(screen.getByText('Personas are managed for you')).toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: /add persona/i })).toBeNull();
+    expect(screen.queryByPlaceholderText('e.g. CryptoAlice')).toBeNull();
+  });
+});

@@ -145,7 +145,12 @@ export function IdentityCard({ onHandshake, row, resolved, childMode, foreign = 
   const [backdropMenuOpen, setBackdropMenuOpen] = useState(false);
   const [backdropNote, setBackdropNote] = useState<string | null>(null);
   const backdropNoteTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
-  const canEditBackdrop = !isDependant && !childDormant && !foreign;
+  // Cosmetic and device-local, so it never waits on signing: a guardian's
+  // dependant card and a child's own phone offer it too. A dormant child
+  // (the guardian has not raised the stage yet) is the common state of a
+  // freshly paired phone, so dormancy does not hide it; only a phone the
+  // guardian has unpaired, a card with no key yet and a foreign card do.
+  const canEditBackdrop = !!resolved.publicKey && childSignerKind !== 'unpaired' && !foreign;
   // The system picker hides the page; without the grace that hide locks the
   // app and unmounts this input before the pick lands.
   const openBackdropPicker = () => { armPickerGrace(); backdropInputRef.current?.click(); };

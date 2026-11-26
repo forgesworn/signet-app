@@ -167,3 +167,86 @@ describe('PersonaAdvanced autonomy picker', () => {
     expect(AUTONOMY_PICKER_NOTE).toBe(screen.getByTestId('autonomy-picker-note').textContent);
   });
 });
+
+describe('PersonaAdvanced public profile — child\'s phone vs guardian', () => {
+  const PUBLISHED_COPY = 'Only your guardian can publish a public profile, from their phone.';
+  const publishedIdentity: SignetIdentity = {
+    ...identity,
+    persona: { ...identity.persona, publicProfile: { enabled: true, lastPublishedAt: 1_700_000_000, lastEventId: 'e'.repeat(64) } },
+  };
+
+  function renderOwn(props: Record<string, unknown>, ident = identity) {
+    const handlers = {
+      onPublishProfile: vi.fn(async () => ({ ok: true })),
+      onDisablePublicProfile: vi.fn(async () => {}),
+      onRepublish: vi.fn(async () => ({ ok: true })),
+      onCheckExistingProfile: vi.fn(async () => null),
+      onMatchExistingProfile: vi.fn(async () => {}),
+    };
+    render(<PersonaAdvanced slotTarget="persona" identity={ident} dependants={[]} onBack={() => {}} {...handlers} {...props} />);
+    return handlers;
+  }
+
+  it('on a child\'s phone, offers no publish, check or confirm, and says only the guardian can', () => {
+    renderOwn({ publicProfileGuardianOnly: true });
+    expect(screen.queryByRole('button', { name: /publish/i })).toBeNull();
+    expect(screen.queryByRole('button', { name: /check nostr/i })).toBeNull();
+    expect(screen.getByRole('note').textContent).toBe(PUBLISHED_COPY);
+    expect(screen.getByText(/Status:/).textContent).toContain('Off');
+  });
+
+  it('on a child\'s phone, a published profile shows its status read-only: no republish, no retract', () => {
+    renderOwn({ publicProfileGuardianOnly: true }, publishedIdentity);
+    expect(screen.getByText(/Status:/).textContent).toContain('On');
+    expect(screen.getByText(/Status:/).textContent).toContain('published');
+    expect(screen.queryByRole('button', { name: /republish/i })).toBeNull();
+    expect(screen.queryByRole('button', { name: /disable|retract/i })).toBeNull();
+    expect(screen.getByRole('note').textContent).toBe(PUBLISHED_COPY);
+  });
+
+  it('on the owner\'s own phone the controls are unchanged', () => {
+    renderOwn({}, publishedIdentity);
+    expect(screen.getByRole('button', { name: 'Republish' })).toBeTruthy();
+    expect(screen.getByRole('button', { name: /disable \/ retract/i })).toBeTruthy();
+    expect(screen.queryByText(PUBLISHED_COPY)).toBeNull();
+  });
+
+  it('on the guardian\'s phone a dependant slot still offers Publish for the dependant, and it publishes', async () => {
+    const { onPublishProfile } = (() => {
+      const onPublishProfile = vi.fn(async () => ({ ok: true }));
+      render(
+        <PersonaAdvanced slotTarget="persona" depPubkey={dep().id} identity={identity} dependants={[dep()]}
+          onPublishProfile={onPublishProfile} onDisablePublicProfile={vi.fn(async () => {})} onBack={() => {}} />,
+      );
+      return { onPublishProfile };
+    })();
+    fireEvent.click(screen.getByRole('button', { name: 'Publish for Sam' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Publish' }));
+    await waitFor(() => expect(onPublishProfile).toHaveBeenCalledWith('dep-persona', undefined));
+    expect(screen.queryByText(PUBLISHED_COPY)).toBeNull();
+  });
+});
+
+describe('PersonaAdvanced delete persona — child\'s phone vs owner', () => {
+  const EXTRA = 'e'.repeat(64);
+  const withExtra: SignetIdentity = {
+    ...identity,
+    extraPersonas: [{ publicKey: EXTRA, privateKey: '', displayName: 'Gamer', derivationName: 'persona-2' }],
+  } as SignetIdentity;
+
+  function renderExtra(props: Record<string, unknown>) {
+    render(<PersonaAdvanced slotTarget={EXTRA} identity={withExtra} dependants={[]} onBack={() => {}}
+      onPublishProfile={vi.fn(async () => ({ ok: true }))} onDisablePublicProfile={vi.fn(async () => {})} {...props} />);
+  }
+
+  it('offers Delete persona when a delete handler is passed', () => {
+    renderExtra({ onDeletePersona: vi.fn(async () => {}) });
+    expect(screen.getByRole('button', { name: 'Delete persona' })).toBeTruthy();
+  });
+
+  it('shows no Delete persona block when the handler is withheld (a child\'s phone)', () => {
+    renderExtra({ onDeletePersona: undefined });
+    expect(screen.queryByRole('button', { name: 'Delete persona' })).toBeNull();
+    expect(screen.queryByText('Delete persona')).toBeNull();
+  });
+});

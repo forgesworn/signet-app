@@ -172,6 +172,16 @@ describe('takedown', () => {
     expect(inv.takedown).toEqual({ profiles: 0, appGrants: 0 });
   });
 
+  it('is zero on a paired-child phone, which only mirrors the guardian\'s published profiles', () => {
+    const inv = build({
+      identity: ident({ persona: slot({ privateKey: K, publicProfile: published }) }),
+      activeGrantCount: 2,
+      signingMode: 'paired-child',
+      hasBunkerRouter: true,
+    });
+    expect(inv.takedown).toEqual({ profiles: 0, appGrants: 0 });
+  });
+
   it('is zero with no identity', () => {
     expect(build({ identity: null, activeGrantCount: 2 }).takedown).toEqual({ profiles: 0, appGrants: 0 });
   });

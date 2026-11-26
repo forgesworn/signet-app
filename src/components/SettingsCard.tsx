@@ -11,6 +11,8 @@ import { CardBackdropRow } from './CardBackdropRow';
 import type { PictureCrop } from '../lib/picture-crop';
 import { usePicturePick } from '../hooks/usePicturePick';
 import { armPickerGrace } from '../lib/picker-grace';
+import { CHILD_SIDE_COPY } from '../lib/child-device-copy';
+import type { ChildSignerKind } from '../lib/child-bunker';
 import { useCarouselArrows } from './CarouselArrowContext';
 import type { DeleteOutcome } from '../lib/blob-deletion';
 
@@ -33,6 +35,11 @@ interface Props {
    * has no Advanced-page actions to perform here. Default false.
    */
   isPairedChild?: boolean;
+  /**
+   * Which signer covers a paired-child device. `'unpaired'` hides the card backdrop
+   * row, matching the identity card (the device has been cut loose from its guardian).
+   */
+  childSignerKind?: ChildSignerKind;
   onNavigateDeepPage: (page: string, opts?: {
     focusPersona?: string;
     dependantId?: string;
@@ -458,6 +465,34 @@ export function InlineAvatarRow({
   );
 }
 
+function ownNameLabel(slotKind: SlotKind): string {
+  return slotKind === 'natural-person'
+    ? 'Natural Person name'
+    : slotKind === 'persona'
+      ? 'Default persona name'
+      : slotKind === 'professional-persona'
+        ? 'Professional persona name'
+        : 'Persona name';
+}
+
+/**
+ * The name where the editor would be, on a child's own phone: shown plain,
+ * with the one line that says whose it is to change.
+ */
+function ReadOnlyNameRow({ currentName, label }: { currentName: string; label: string }) {
+  return (
+    <div className="row slot-name-row">
+      <div className="row-main">
+        <span className="row-sub">{label}</span>
+        <span className={`slot-name-value${currentName ? '' : ' slot-name-value--unset'}`}>
+          {currentName || 'Not set'}
+        </span>
+        <span className="row-sub">{CHILD_SIDE_COPY.namesGuardianManaged}</span>
+      </div>
+    </div>
+  );
+}
+
 /**
  * Inline name editor — used at the top of the persona section. Same shape
  * as the editor in Personas.tsx + GuardianSettings.tsx so we keep the UX
@@ -565,6 +600,7 @@ export function SettingsCard({
   row,
   childMode,
   isPairedChild = false,
+  childSignerKind,
   onNavigateDeepPage,
   dependantsCount,
   defaultBlossomUrl,
@@ -624,6 +660,10 @@ export function SettingsCard({
   // public profile and its publishing spend the guardian's consent and
   // network and need no PIN, so the child sees them read only.
   const pairedChildViewForSlot = (isPairedChild || childMode) && isDepRow;
+  // A child's own phone never publishes, retracts or edits a persona's public
+  // profile; the guardian does that on their phone. Distinct from
+  // `pairedChildViewForSlot` so the name and avatar rows keep their own rules.
+  const publicProfileReadOnly = pairedChildViewForSlot || isPairedChild;
 
   function renderInlineSlotEditor() {
     if (!slot) return null;
@@ -655,7 +695,7 @@ export function SettingsCard({
     // onNip05Checked undefined there so SlotProfileFields hides the Check
     // button rather than writing a check result the kid has no consequential
     // control over (mirrors the rest of this read-only view).
-    const onNip05CheckedForSlot = pairedChildViewForSlot
+    const onNip05CheckedForSlot = publicProfileReadOnly
       ? undefined
       : slot.scope === 'own' && slot.ownTarget && onNip05Checked
         ? (result: import('../lib/nip05-check').Nip05CheckResult, checkedAt: number) =>
@@ -673,14 +713,16 @@ export function SettingsCard({
         publishedBase={slot.publishedBase}
         slotKind={slot.slotKind}
         imported={slot.imported}
-        pairedChildView={pairedChildViewForSlot}
-        readOnlyNote={childMode && !isPairedChild ? CHILD_MODE_PROFILE_NOTE : undefined}
+        pairedChildView={publicProfileReadOnly}
+        readOnlyNote={isPairedChild && !pairedChildViewForSlot
+          ? CHILD_SIDE_COPY.publicProfileGuardianOnly
+          : childMode && !isPairedChild ? CHILD_MODE_PROFILE_NOTE : undefined}
         defaultBlossomUrl={defaultBlossomUrl}
         blossomConsent={blossomConsent}
         onSaveConfig={onSaveConfig}
         onPublishNow={onPublishNow}
         onUploadPicture={onUploadPicture}
-        onDeleteBlob={pairedChildViewForSlot ? undefined : onDeletePublicBlob}
+        onDeleteBlob={publicProfileReadOnly ? undefined : onDeletePublicBlob}
         onNip05Checked={onNip05CheckedForSlot}
       />
     );
@@ -729,15 +771,11 @@ export function SettingsCard({
     if (!slot) return null;
 
     if (slot.scope === 'own') {
-      if (!onUpdateOwnPersonaName || !slot.ownTarget) return null;
-      const label =
-        slot.slotKind === 'natural-person'
-          ? 'Natural Person name'
-          : slot.slotKind === 'persona'
-            ? 'Default persona name'
-            : slot.slotKind === 'professional-persona'
-              ? 'Professional persona name'
-              : 'Persona name';
+      if (!slot.ownTarget) return null;
+      // A child's own phone: the guardian names the personas, so the name is plain text.
+      if (isPairedChild) return <ReadOnlyNameRow currentName={slot.config.displayName} label={ownNameLabel(slot.slotKind)} />;
+      if (!onUpdateOwnPersonaName) return null;
+      const label = ownNameLabel(slot.slotKind);
       const target = slot.ownTarget;
       return (
         <InlineNameEditor
@@ -817,6 +855,7 @@ export function SettingsCard({
           <div className="settings-label" style={{ marginTop: 12 }}>Profile</div>
           <div className="settings-form-group">
             {renderInlineAvatarRow()}
+            {slot?.pubkey && childSignerKind !== 'unpaired' && <CardBackdropRow pubkey={slot.pubkey} />}
             {renderInlineNameEditor()}
             {renderInlineSlotEditor()}
           </div>
@@ -834,6 +873,7 @@ export function SettingsCard({
           <div className="settings-label">Profile</div>
           <div className="settings-form-group">
             {renderInlineAvatarRow()}
+            {slot?.pubkey && childSignerKind !== 'unpaired' && <CardBackdropRow pubkey={slot.pubkey} />}
             {renderInlineNameEditor()}
             {renderInlineSlotEditor()}
           </div>
@@ -843,7 +883,7 @@ export function SettingsCard({
           <div className="settings-label">Profile</div>
           <div className="settings-form-group">
             {renderInlineAvatarRow()}
-            {slot && <CardBackdropRow pubkey={slot.pubkey} />}
+            {slot?.pubkey && childSignerKind !== 'unpaired' && <CardBackdropRow pubkey={slot.pubkey} />}
             {renderInlineNameEditor()}
             {renderInlineSlotEditor()}
           </div>
@@ -870,7 +910,7 @@ export function SettingsCard({
           <div className="settings-label">Profile</div>
           <div className="settings-form-group">
             {renderInlineAvatarRow()}
-            {slot && <CardBackdropRow pubkey={slot.pubkey} />}
+            {slot?.pubkey && childSignerKind !== 'unpaired' && <CardBackdropRow pubkey={slot.pubkey} />}
             {renderInlineNameEditor()}
             {renderInlineSlotEditor()}
           </div>
