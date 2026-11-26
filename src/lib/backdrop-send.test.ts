@@ -10,9 +10,11 @@ const H2 = '2'.repeat(64);
 const META = { hash: H2, blossomUrl: SERVER, keyHex: '3'.repeat(64), updatedAt: 5 };
 const blob = new Blob(['jpeg'], { type: 'image/jpeg' });
 
+let slotCounter = 0;
 function deps(over: Partial<BackdropSendDeps> = {}) {
   const order: string[] = [];
   const d: BackdropSendDeps = {
+    slotKey: `slot-${++slotCounter}`,
     encryptionKey: 'unlock-key',
     blossomUrl: SERVER,
     blossomConsent: true,
@@ -126,6 +128,88 @@ describe('an upload that spans a lock', () => {
     const { d } = deps({ getKey: () => 'unlock-key' });
     expect((await sendBackdropToChild(blob, d)).ok).toBe(true);
     expect(d.saveSlot).toHaveBeenCalledWith(META);
+  });
+});
+
+function deferred<T>() {
+  let resolve!: (v: T) => void;
+  const promise = new Promise<T>(r => { resolve = r; });
+  return { promise, resolve };
+}
+const metaN = (n: string) => ({ hash: n.repeat(64), blossomUrl: SERVER, keyHex: '3'.repeat(64), updatedAt: 5 });
+
+describe('overlapping sends and removes on one slot', () => {
+  it('a newer pick wins even when the older upload finishes last; the older blob is deleted, never saved', async () => {
+    const first = deferred<ReturnType<typeof metaN>>();
+    const second = deferred<ReturnType<typeof metaN>>();
+    const { d } = deps();
+    const a = sendBackdropToChild(blob, { ...d, upload: vi.fn(() => first.promise) });
+    const b = sendBackdropToChild(blob, { ...d, upload: vi.fn(() => second.promise) });
+    second.resolve(metaN('b'));
+    expect((await b).ok).toBe(true);
+    first.resolve(metaN('a'));
+    const lost = await a;
+    expect(lost.ok).toBe(false);
+    expect(d.saveSlot).toHaveBeenCalledTimes(1);
+    expect(d.saveSlot).toHaveBeenCalledWith(metaN('b'));
+    expect(d.deleteBlob).toHaveBeenCalledWith(BACKDROP_UPLOADER_DOMAIN, 'a'.repeat(64), SERVER);
+  });
+
+  it('a newer pick wins when the older upload finishes first too', async () => {
+    const first = deferred<ReturnType<typeof metaN>>();
+    const second = deferred<ReturnType<typeof metaN>>();
+    const { d } = deps();
+    const a = sendBackdropToChild(blob, { ...d, upload: vi.fn(() => first.promise) });
+    const b = sendBackdropToChild(blob, { ...d, upload: vi.fn(() => second.promise) });
+    first.resolve(metaN('a'));
+    expect((await a).ok).toBe(false);
+    second.resolve(metaN('b'));
+    expect((await b).ok).toBe(true);
+    expect(d.saveSlot).toHaveBeenCalledTimes(1);
+    expect(d.saveSlot).toHaveBeenCalledWith(metaN('b'));
+  });
+
+  it('a remove during an upload wins: the pointer is cleared and the upload is discarded', async () => {
+    const up = deferred<ReturnType<typeof metaN>>();
+    const { d } = deps();
+    const send = sendBackdropToChild(blob, { ...d, upload: vi.fn(() => up.promise) });
+    const removal = removeBackdropFromChild(d);
+    up.resolve(metaN('a'));
+    expect((await send).ok).toBe(false);
+    await removal;
+    expect(d.saveSlot).toHaveBeenCalledTimes(1);
+    expect(d.saveSlot).toHaveBeenCalledWith(null);
+    expect(d.deleteBlob).toHaveBeenCalledWith(BACKDROP_UPLOADER_DOMAIN, 'a'.repeat(64), SERVER);
+  });
+
+  it('a remove that arrives while the send is saving runs after it, so the slot ends empty', async () => {
+    const saving = deferred<{ previous?: { hash: string; server: string } }>();
+    const calls: Array<string | null> = [];
+    const { d } = deps({
+      saveSlot: vi.fn(async (m: { hash: string } | null) => {
+        calls.push(m ? m.hash : null);
+        return m ? saving.promise : { previous: { hash: H2, server: SERVER } };
+      }),
+    });
+    const send = sendBackdropToChild(blob, d);
+    await vi.waitFor(() => expect(calls).toEqual([H2]));
+    const removal = removeBackdropFromChild(d);
+    await Promise.resolve();
+    expect(calls).toEqual([H2]);
+    saving.resolve({});
+    await send;
+    await removal;
+    expect(calls).toEqual([H2, null]);
+  });
+
+  it('slots do not block each other', async () => {
+    const up = deferred<ReturnType<typeof metaN>>();
+    const a = deps();
+    const b = deps();
+    const slow = sendBackdropToChild(blob, { ...a.d, upload: vi.fn(() => up.promise) });
+    expect((await sendBackdropToChild(blob, b.d)).ok).toBe(true);
+    up.resolve(metaN('a'));
+    expect((await slow).ok).toBe(true);
   });
 });
 

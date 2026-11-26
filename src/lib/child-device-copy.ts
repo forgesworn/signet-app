@@ -454,5 +454,6 @@ export const BACKDROP_COPY = {
     noServer: 'Set a Blossom server in Advanced settings, then choose it again.',
     noConsent: 'Turn on Blossom uploads in Advanced settings, then choose it again.',
     failed: 'Check your connection and choose it again.',
+    superseded: 'A newer change to this picture replaced it.',
   },
 } as const;
