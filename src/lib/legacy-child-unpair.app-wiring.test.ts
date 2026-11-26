@@ -13,7 +13,7 @@ describe('legacy unpair notice wiring in App.tsx', () => {
     expect(end).toBeGreaterThan(start);
     const body = app.slice(start, end);
     expect(body).toContain('loadFreshDependants(key)');
-    expect(body).toContain('guardianToChildRelays(fresh, [preferences.relayUrl ?? DEFAULT_RELAY_URL])');
+    expect(body).toContain('legacyUnpairTarget(fresh, [preferences.relayUrl ?? DEFAULT_RELAY_URL])');
     // Nothing publishes ahead of the clear.
     expect(body).not.toContain('publishLegacyUnpairedNotice');
     expect(body).toContain('} catch { /* best effort */ }');

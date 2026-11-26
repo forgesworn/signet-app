@@ -414,7 +414,7 @@ import { useChildRulesSync } from './hooks/useChildRulesSync';
 import { useChildRulesPublisher } from './hooks/useChildRulesPublisher';
 import { useChildActivityPublisher } from './hooks/useChildActivityPublisher';
 import { buildUnpairedNotice } from './lib/child-activity';
-import { clearThenPublishLegacyUnpair, type LegacyUnpairTarget } from './lib/legacy-child-unpair';
+import { clearThenPublishLegacyUnpair, legacyUnpairTarget, type LegacyUnpairTarget } from './lib/legacy-child-unpair';
 import { useLegacyChildUnpaired } from './hooks/useLegacyChildUnpaired';
 import { pendingRuleSeeds, phoneServedDependants, usesChildDirectPairing } from './lib/child-device-pairing';
 import { useChildAsks, type PendingChildAsk } from './hooks/useChildAsks';
@@ -15603,12 +15603,8 @@ function AppContent() {
             let target: LegacyUnpairTarget | null = null;
             try {
               const fresh = (await loadFreshDependants(key)).find(d => d.id === pubkey);
-              if (fresh?.bunkerEndpoint) {
-                target = {
-                  endpoint: { privateKey: fresh.bunkerEndpoint.privateKey, authorizedClientPubkey: fresh.bunkerEndpoint.authorizedClientPubkey ?? '' },
-                  relays: guardianToChildRelays(fresh, [preferences.relayUrl ?? DEFAULT_RELAY_URL]),
-                };
-              }
+              // Legacy pairings only: a direct (Heartwood) one has its own notice.
+              target = legacyUnpairTarget(fresh, [preferences.relayUrl ?? DEFAULT_RELAY_URL]);
             } catch { /* best effort */ }
             return clearThenPublishLegacyUnpair(target, () => clearDependantBunkerEndpoint(pubkey, key));
           }}

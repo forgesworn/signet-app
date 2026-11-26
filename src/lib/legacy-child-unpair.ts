@@ -39,9 +39,9 @@
  * so `p` alone could not tell the two pairings apart).
  */
 import type { NostrEvent } from 'signet-protocol';
-import type { PairedChildRecord } from '../types';
+import type { DependantChildDevice, PairedChildRecord } from '../types';
 import { buildUnpairedNotice, isUnpairedNotice } from './child-activity';
-import { guardianRailPubkey } from './paired-child-rail';
+import { guardianRailPubkey, guardianToChildRelays } from './paired-child-rail';
 import { publishToEveryRelay } from './sync-relays';
 
 const HEX64 = /^[0-9a-f]{64}$/;
@@ -91,6 +91,25 @@ export async function publishLegacyUnpairedNotice(
 export interface LegacyUnpairTarget {
   endpoint: { privateKey: string; authorizedClientPubkey: string };
   relays: string[];
+}
+
+/**
+ * The notice target for a dependant's legacy phone pairing, read from the
+ * record as stored. Null when there is nothing to tell: no endpoint, or a
+ * direct (Heartwood) pairing, where `bunkerEndpoint` is the rail key and the
+ * child's `useChildDeviceLink` would take this notice as a full unpair though
+ * no `revoke_client` has run on the device. Direct pairings have their own
+ * unpaired notice.
+ */
+export function legacyUnpairTarget(
+  dep: { bunkerEndpoint?: { privateKey?: string; authorizedClientPubkey?: string }; childDevice?: Pick<DependantChildDevice, 'mode' | 'railRelay'> } | undefined,
+  baseRelays: readonly string[],
+): LegacyUnpairTarget | null {
+  if (!dep?.bunkerEndpoint || dep.childDevice?.mode === 'heartwood-direct') return null;
+  return {
+    endpoint: { privateKey: dep.bunkerEndpoint.privateKey ?? '', authorizedClientPubkey: dep.bunkerEndpoint.authorizedClientPubkey ?? '' },
+    relays: guardianToChildRelays(dep, baseRelays),
+  };
 }
 
 /**

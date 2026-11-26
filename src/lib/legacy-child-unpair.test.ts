@@ -38,7 +38,7 @@ import { LocalSigningBackend } from './signing-backend';
 import { subscribePersonaInventory, parsePersonaInventoryPayload } from './persona-inventory-sync';
 import { CHILD_UNPAIRED_D_TAG } from './child-activity';
 import {
-  acceptLegacyUnpairedNotice, buildLegacyUnpairedNotice, publishLegacyUnpairedNotice, clearThenPublishLegacyUnpair, LEGACY_UNPAIR_CLOCK_SKEW_S,
+  acceptLegacyUnpairedNotice, buildLegacyUnpairedNotice, publishLegacyUnpairedNotice, clearThenPublishLegacyUnpair, legacyUnpairTarget, LEGACY_UNPAIR_CLOCK_SKEW_S,
 } from './legacy-child-unpair';
 import type { PairedChildRecord } from '../types';
 
@@ -196,5 +196,22 @@ describe('clearThenPublishLegacyUnpair (the notice follows the clear)', () => {
     const publish = vi.fn(async () => true);
     expect(await clearThenPublishLegacyUnpair(null, async () => 7, { publish })).toBe(7);
     expect(publish).not.toHaveBeenCalled();
+  });
+});
+
+describe('legacyUnpairTarget (legacy pairings only)', () => {
+  const ep = () => ({ privateKey: endpointPriv, authorizedClientPubkey: clientPub });
+
+  it('captures the endpoint and the inventory relays of a legacy pairing', () => {
+    expect(legacyUnpairTarget({ bunkerEndpoint: ep() }, [RELAY])).toEqual({ endpoint: ep(), relays: [RELAY] });
+  });
+
+  it('is null for a direct (Heartwood) pairing, where the child would take it as a full unpair', () => {
+    expect(legacyUnpairTarget({ bunkerEndpoint: ep(), childDevice: { mode: 'heartwood-direct', railRelay: 'wss://rail.example' } }, [RELAY])).toBeNull();
+  });
+
+  it('is null with no endpoint', () => {
+    expect(legacyUnpairTarget({}, [RELAY])).toBeNull();
+    expect(legacyUnpairTarget(undefined, [RELAY])).toBeNull();
   });
 });
