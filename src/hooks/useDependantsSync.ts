@@ -174,11 +174,19 @@ export function useDependantsSync({ publishEnabled = true,  identity, npBackend,
           // Merged inside the dependant write queue, onto the record as stored
           // at write time, so a setter that saved while this fetch ran (a
           // backdrop, an avatar) is merged rather than overwritten.
-          const merged = await db.mutateDependant(reconstructed.guardianPubkey, reconstructed.id, encryptionKey, localHit => {
-            if (cancelled) return null;
-            if (localHit && localHit.createdAt > reconstructed.createdAt) return null;
-            return mergeDependantWithLocal(reconstructed, localHit, remote.createdAt);
-          }, { create: true });
+          let merged: DependantIdentity | null;
+          try {
+            merged = await db.mutateDependant(reconstructed.guardianPubkey, reconstructed.id, encryptionKey, localHit => {
+              if (cancelled) return null;
+              if (localHit && localHit.createdAt > reconstructed.createdAt) return null;
+              return mergeDependantWithLocal(reconstructed, localHit, remote.createdAt);
+            }, { create: true });
+          } catch {
+            // The local row exists but cannot be read (or is not this guardian's):
+            // leave it alone, and let the rest of the rail merge.
+            unreconciled.add(wire.id);
+            continue;
+          }
           if (merged) savedAny = true;
         }
         if (cancelled) return;

@@ -322,6 +322,7 @@ export function useDependants(
     avatar: { hash: string; blossomUrl: string; keyHex: string; updatedAt: number },
   ): Promise<{ previous?: { hash: string; server: string } }> => {
     if (!encryptionKey) throw new Error('Encryption key required');
+    if (!guardianPubkey) throw new Error('No guardian identity');
     let previous: { hash: string; server: string } | undefined;
     await mutate(depPubkey, encryptionKey, dep => {
       if (!dep) throw new Error('Dependant not found');
@@ -340,7 +341,7 @@ export function useDependants(
     // Locked while saving: the lock effect owns state now; do not reload into it.
     if (liveKeyRef.current === encryptionKey) await loadDependants();
     return { previous };
-  }, [mutate, encryptionKey, loadDependants]);
+  }, [mutate, guardianPubkey, encryptionKey, loadDependants]);
 
   /**
    * Guardian-side write of a dep persona's public-profile config + state.
@@ -497,6 +498,7 @@ export function useDependants(
     target: SlotTarget,
   ): Promise<{ previous?: { hash: string; server: string } }> => {
     if (!encryptionKey) throw new Error('Encryption key required');
+    if (!guardianPubkey) throw new Error('No guardian identity');
     let previous: { hash: string; server: string } | undefined;
     await mutate(depPubkey, encryptionKey, dep => {
       if (!dep) throw new Error('Dependant not found');
@@ -514,7 +516,7 @@ export function useDependants(
     });
     if (liveKeyRef.current === encryptionKey) await loadDependants();
     return { previous };
-  }, [mutate, encryptionKey, loadDependants]);
+  }, [mutate, guardianPubkey, encryptionKey, loadDependants]);
 
   /**
    * Set (or replace) the contact-card avatar for one of a dependant's persona
