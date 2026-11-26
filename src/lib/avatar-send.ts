@@ -5,7 +5,9 @@
  * see a newer change on the same slot meanwhile. Pure and injectable so the
  * flow is testable outside App.tsx.
  *
- * - The newest set or clear on a slot wins, whatever order uploads land in.
+ * - The newest set or clear on a slot wins, whatever order uploads land in,
+ *   unless every newer set failed before saving: an older set still uploading
+ *   then saves after all (`slot-sequencer.ts`).
  * - After the upload: superseded → the new blob is discarded; the key no longer
  *   live → nothing is saved and the blob is recorded as an orphan (deleting
  *   needs the key) for the next unlock's sweep; the save refusing (slot gone,
@@ -16,7 +18,7 @@
 
 import { AVATAR_UPLOADER_DOMAIN } from './blossom-uploader';
 import { deleteReplacedAvatar, discardUpload, type BlobDeleter } from './blob-deletion';
-import { createSlotSequencer } from './slot-sequencer';
+import { createSlotSequencer, saveUnlessSuperseded } from './slot-sequencer';
 
 export interface AvatarMeta { hash: string; blossomUrl: string; keyHex: string; updatedAt: number }
 type Previous = { hash: string; server: string } | undefined;
@@ -64,39 +66,56 @@ function isLive(deps: AvatarSlotDeps): boolean {
  */
 export async function setSlotAvatar(deps: AvatarSetDeps): Promise<AvatarChangeResult> {
   // Bumped before anything is awaited: a set or clear started after this
-  // point outranks it.
+  // point outranks it (unless every newer set fails before saving).
   const generation = avatarSlots.bump(deps.slotKey);
-  const meta = await deps.upload();
-  const discard = () => discardUpload({
-    domain: AVATAR_UPLOADER_DOMAIN, hash: meta.hash, server: meta.blossomUrl,
-    live: isLive(deps), deleteBlob: deps.deleteBlob, recordOrphan: deps.recordOrphan,
-  });
-  return avatarSlots.serial(deps.slotKey, async (): Promise<AvatarChangeResult> => {
-    if (avatarSlots.current(deps.slotKey) !== generation) {
-      void discard();
-      return { ok: false, reason: 'superseded' };
-    }
-    if (!isLive(deps)) {
-      void discard();
-      return { ok: false, reason: 'locked' };
-    }
-    let previous: Previous;
+  let saved = false;
+  try {
+    let meta: AvatarMeta;
     try {
-      ({ previous } = await deps.saveSlot(meta));
-    } catch (error) {
-      const locked = !isLive(deps);
-      void discard();
-      return { ok: false, reason: locked ? 'locked' : 'failed', error };
+      meta = await deps.upload();
+    } catch (err) {
+      // Failed before saving: an older set still in flight may save instead.
+      avatarSlots.settle(deps.slotKey, generation, 'failed');
+      throw err;
     }
-    // R3: the replaced avatar goes now that nothing stored points at it.
-    const deletion = deleteReplacedAvatar(previous, meta.hash, deps.deleteBlob).catch(() => undefined);
-    return { ok: true, meta, deletion };
-  });
+    avatarSlots.settle(deps.slotKey, generation, 'uploaded');
+    const discard = () => discardUpload({
+      domain: AVATAR_UPLOADER_DOMAIN, hash: meta.hash, server: meta.blossomUrl,
+      live: isLive(deps), deleteBlob: deps.deleteBlob, recordOrphan: deps.recordOrphan,
+    });
+    const res = await saveUnlessSuperseded<AvatarChangeResult>(avatarSlots, deps.slotKey, generation, {
+      superseded: () => {
+        void discard();
+        return { ok: false, reason: 'superseded' };
+      },
+      save: async () => {
+        if (!isLive(deps)) {
+          void discard();
+          return { ok: false, reason: 'locked' };
+        }
+        let previous: Previous;
+        try {
+          ({ previous } = await deps.saveSlot(meta));
+        } catch (error) {
+          const locked = !isLive(deps);
+          void discard();
+          return { ok: false, reason: locked ? 'locked' : 'failed', error };
+        }
+        // R3: the replaced avatar goes now that nothing stored points at it.
+        const deletion = deleteReplacedAvatar(previous, meta.hash, deps.deleteBlob).catch(() => undefined);
+        return { ok: true, meta, deletion };
+      },
+    });
+    saved = res.ok;
+    return res;
+  } finally {
+    avatarSlots.finish(deps.slotKey, generation, saved);
+  }
 }
 
 /** Clear the slot's avatar, then delete the blob it pointed at. Outranks any set still uploading. */
 export async function clearSlotAvatar(deps: AvatarClearDeps): Promise<AvatarChangeResult> {
-  avatarSlots.bump(deps.slotKey);
+  avatarSlots.bump(deps.slotKey, 'clear');
   return avatarSlots.serial(deps.slotKey, async (): Promise<AvatarChangeResult> => {
     if (!isLive(deps)) return { ok: false, reason: 'locked' };
     let previous: Previous;

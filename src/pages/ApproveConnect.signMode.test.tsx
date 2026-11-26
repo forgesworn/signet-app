@@ -5,6 +5,8 @@ import { ApproveConnect } from './ApproveConnect';
 import type { SignetIdentity } from '../types';
 import type { NostrConnectRequest } from '../lib/nip46';
 import { HandoffNotSavedError } from '../lib/heartwood-handoff';
+import { HeartwoodDeviceError } from '../lib/heartwood-mgmt';
+import { HeartwoodCopyError, heartwoodMgmtErrorCopy } from '../lib/heartwood-mgmt-error-copy';
 import { SIGN_IN_LINK_NEEDS_UPDATE_COPY } from '../lib/heartwood-signin-link';
 
 afterEach(cleanup);
@@ -143,6 +145,17 @@ describe('after a failure that answered the request', () => {
     expect(screen.queryByRole('button', { name: 'Try again' })).toBeNull();
     fireEvent.click(screen.getByRole('button', { name: 'Close' }));
     expect(onDeny).toHaveBeenCalledTimes(1);
+  });
+
+  it("shows the board's whole reply, wrapped rather than cut", async () => {
+    const reply = 'pairing was refused: the slot table holds the maximum number of clients, remove one and retry the connect request from the app that is asking to be handed off to this device';
+    const message = heartwoodMgmtErrorCopy(new HeartwoodDeviceError(reply, 'nostrconnect_v2'));
+    renderPage(vi.fn(() => Promise.reject(new HeartwoodCopyError(message))), () => true, undefined, scoped);
+    fireEvent.click(screen.getByRole('button', { name: 'Approve' }));
+    const banner = await waitFor(() => screen.getByText(new RegExp(reply.slice(0, 40))));
+    expect(banner.textContent).toBe(`Your Heartwood replied: "${reply}".`);
+    expect(banner.style.overflowWrap).toBe('anywhere');
+    expect(banner.style.textOverflow).toBe('');
   });
 
   it('an ordinary failure can still be tried again', async () => {

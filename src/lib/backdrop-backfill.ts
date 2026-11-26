@@ -10,7 +10,12 @@
  *
  * Quiet and safe by construction:
  * - sequential, once per `(slot, paired phone, picture digest)` per unlock (`attempted`, kept
- *   by the caller); a failure stays silent and the card's retry button remains;
+ *   by the caller) while nothing else changes the slot; a failure stays silent
+ *   and the card's retry button remains. Each attempt remembers the slot's send
+ *   generation as it stood afterwards, so the stale dependants snapshot right
+ *   after a send cannot send twice, yet a slot whose sent copy was cleared since
+ *   (hidden from the phone, which bumps the generation, then shown again) is
+ *   sent again in the same unlock;
  * - a user action always wins. A slot with a send or remove in flight is
  *   skipped, and the send carries the slot generation read BEFORE the stored
  *   rows were looked at, so a set or remove the user starts meanwhile is never
@@ -20,6 +25,7 @@
  */
 
 import { backdropSlotState } from './backdrop-send';
+import { BACKDROP_COPY } from './child-device-copy';
 import type { DependantBackdropLookup } from './backdrop-send-context';
 
 export interface BackfillDeps {
@@ -30,8 +36,12 @@ export interface BackfillDeps {
   /** The device's own `backdrop:` picture for the pubkey, or null. */
   readLocal: (pubkey: string) => Promise<Blob | null>;
   digest: (blob: Blob) => Promise<string>;
-  /** `slotKey:digest` pairs already tried this unlock; mutated. */
-  attempted: Set<string>;
+  /**
+   * `slotKey:pairing:digest` already tried this unlock, each with the slot's
+   * send generation right after that attempt; mutated. Tried again only once
+   * something else has moved the generation on.
+   */
+  attempted: Map<string, number>;
   /** False once the run should stop (locked, unmounted, disabled). */
   isLive: () => boolean;
 }
@@ -55,11 +65,24 @@ export async function runBackdropBackfill(deps: BackfillDeps): Promise<number> {
       if (link.sent && link.sentDigest === digest) continue;
       // The pairing is part of the key: after an unpair and a re-pair the new phone has nothing yet.
       const memo = `${link.slotKey}:${link.pairing ?? ''}:${digest}`;
-      if (deps.attempted.has(memo)) continue;
+      if (deps.attempted.get(memo) === state.generation) continue;
       if (!deps.isLive()) return started;
-      deps.attempted.add(memo);
+      // Held at the generation read before the send while it runs, so a pass
+      // started meanwhile skips it; replaced by the one after it once it settles.
+      deps.attempted.set(memo, state.generation);
       started += 1;
-      await link.send(blob, { backfill: { generation: state.generation } });
+      let superseded = false;
+      try {
+        const result = await link.send(blob, { backfill: { generation: state.generation } });
+        superseded = !result.ok && result.reason === BACKDROP_COPY.reasons.superseded;
+      } finally {
+        // A send a user action outranked saved nothing, so it is not an attempt:
+        // keeping the memo would hold the slot back after e.g. a hide mid-upload
+        // and a show (which bumps nothing) until the next unlock. A thrown or
+        // failed send still remembers the generation, so nothing retries in a loop.
+        if (superseded) deps.attempted.delete(memo);
+        else deps.attempted.set(memo, backdropSlotState(link.slotKey).generation);
+      }
     } catch {
       // Silent: the card's retry button is still there.
     }

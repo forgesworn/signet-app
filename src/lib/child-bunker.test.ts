@@ -296,11 +296,17 @@ describe('childSignerKind', () => {
     expect(childSignerKind({ ...base, routerUp: false, stalled: true })).toBe('unpaired');
   });
 
-  it('unpaired while locked stays heartwood; a non-direct child or a guardian ignores it', () => {
+  it('unpaired while locked keeps the old line; a guardian ignores it', () => {
     expect(childSignerKind({ signingMode: 'paired-child', direct: true, routerUp: true, unlocked: false, unpaired: true })).toBe('heartwood');
-    expect(childSignerKind({ signingMode: 'paired-child', direct: false, routerUp: false, unlocked: true, unpaired: true })).toBe('guardian-phone');
-    expect(childSignerKind({ signingMode: 'paired-child', direct: false, routerUp: true, unlocked: true, unpaired: true })).toBe('heartwood');
+    expect(childSignerKind({ signingMode: 'paired-child', direct: false, routerUp: false, unlocked: false, unpaired: true })).toBe('guardian-phone');
+    expect(childSignerKind({ signingMode: 'paired-child', direct: false, routerUp: true, unlocked: false, unpaired: true })).toBe('heartwood');
     expect(childSignerKind({ signingMode: 'local', direct: true, routerUp: true, unlocked: true, unpaired: true })).toBe('guardian-phone');
+  });
+
+  it('an unlocked legacy phone-paired child the guardian revoked says unpaired too (the F16 card)', () => {
+    expect(childSignerKind({ signingMode: 'paired-child', direct: false, routerUp: false, unlocked: true, unpaired: true })).toBe('unpaired');
+    expect(childSignerKind({ signingMode: 'paired-child', direct: false, routerUp: true, unlocked: true, unpaired: true })).toBe('unpaired');
+    expect(childSignerKind({ signingMode: 'paired-child', direct: false, routerUp: false, unlocked: true, unpaired: false })).toBe('guardian-phone');
   });
 
   it('a direct install is the Heartwood whatever the router does: connecting while it is down (unlocked)', () => {

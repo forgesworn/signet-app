@@ -31,8 +31,12 @@ export class HeartwoodCopyError extends Error {
   }
 }
 
-/** Longest piece of a device's own error text shown. */
-export const DEVICE_TEXT_MAX = 120;
+/**
+ * Longest piece of a device's own error text shown. Long enough for a whole
+ * reply (a device's pairing refusal ran past the old 120 and read as
+ * "pairing w…"); the banner wraps it rather than cutting it.
+ */
+export const DEVICE_TEXT_MAX = 300;
 
 /** Control and bidi characters and double quotes out, whitespace collapsed, capped by code point. */
 function cleanDeviceText(raw: string): string {
@@ -51,14 +55,20 @@ function writtenForPeople(raw: string): boolean {
   return raw.length <= 240 && /^[A-Z][^_(){}<>]*[.!?]$/.test(raw.trim());
 }
 
+/** A known code's friendly copy, then the device's own words when they say more. */
+function withDeviceText(copy: string, text: string): string {
+  return text && text.toLowerCase() !== copy.toLowerCase() ? `${copy} Your Heartwood said: "${text}".` : copy;
+}
+
 export function heartwoodMgmtErrorCopy(e: unknown): string {
   if (e instanceof HeartwoodCopyError) return e.message;
   const raw = e instanceof Error ? e.message : typeof e === 'string' ? e : '';
   const m = raw.toLowerCase();
-  if (/low on memory|out of memory/.test(m)) return MGMT_LOW_MEMORY_COPY;
-  if (/stale_management_challenge|stale_client_slot/.test(m)) return MGMT_CHANGED_COPY;
+  const text = e instanceof HeartwoodDeviceError ? cleanDeviceText(raw) : '';
+  if (/low on memory|out of memory/.test(m)) return withDeviceText(MGMT_LOW_MEMORY_COPY, text);
+  // A bare code (one word, no sentence) says nothing the copy does not.
+  if (/stale_management_challenge|stale_client_slot/.test(m)) return withDeviceText(MGMT_CHANGED_COPY, /\s/.test(text) ? text : '');
   if (e instanceof HeartwoodDeviceError) {
-    const text = cleanDeviceText(raw);
     return text ? `Your Heartwood replied: "${text}".` : MGMT_GENERIC_COPY;
   }
   if (/^timeout waiting for device/.test(m)) return MGMT_NO_ANSWER_COPY;

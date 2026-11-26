@@ -25,7 +25,7 @@ export interface UseBackdropBackfillOpts {
 export function useBackdropBackfill(opts: UseBackdropBackfillOpts): void {
   const latest = useRef(opts);
   latest.current = opts;
-  const attempted = useRef(new Set<string>());
+  const attempted = useRef(new Map<string, number>());
   const attemptedFor = useRef<string | null>(null);
   const running = useRef(false);
   const again = useRef(false);
@@ -35,7 +35,7 @@ export function useBackdropBackfill(opts: UseBackdropBackfillOpts): void {
     // A new unlock starts a new set; a lock empties it.
     if (attemptedFor.current !== encryptionKey) {
       attemptedFor.current = encryptionKey;
-      attempted.current = new Set();
+      attempted.current = new Map();
     }
     if (!enabled || !encryptionKey) return;
     if (running.current) { again.current = true; return; }

@@ -13,7 +13,7 @@
 import { BlossomUploadError } from './blossom';
 import { BACKDROP_UPLOADER_DOMAIN } from './blossom-uploader';
 import { deleteReplacedBackdrop, discardUpload, type DeleteOutcome } from './blob-deletion';
-import { createSlotSequencer } from './slot-sequencer';
+import { createSlotSequencer, saveUnlessSuperseded } from './slot-sequencer';
 import { uploadBackdrop, type BackdropMetadata } from './backdrop-blob';
 import { BACKDROP_COPY } from './child-device-copy';
 import type { BackdropSendResult } from './backdrop-send-context';
@@ -83,7 +83,7 @@ export function backdropSlotState(slotKey: string): { busy: boolean; generation:
  * phone can no longer use). `slotTargets` as the lookup keys them.
  */
 export function supersedeBackdropSends(dependantId: string, slotTargets: readonly string[]): void {
-  for (const target of slotTargets) backdropSlots.bump(`${dependantId}:${target}`);
+  for (const target of slotTargets) backdropSlots.bump(`${dependantId}:${target}`, 'clear');
 }
 
 async function whileInFlight<T>(slotKey: string, run: () => Promise<T>): Promise<T> {
@@ -123,8 +123,16 @@ export async function sendBackdropToChild(
   }
   // A newer send or a remove on this slot, started after this point, outranks
   // this one: it will find the counter moved on and discard what it uploaded.
+  // (Unless every newer send fails before saving: then this one may still save.)
   const generation = backdropSlots.bump(deps.slotKey);
-  return whileInFlight(deps.slotKey, () => uploadAndSave(blob, { ...deps, blossomUrl: deps.blossomUrl as string, encryptionKey: deps.encryptionKey as string }, generation));
+  let saved = false;
+  try {
+    const res = await whileInFlight(deps.slotKey, () => uploadAndSave(blob, { ...deps, blossomUrl: deps.blossomUrl as string, encryptionKey: deps.encryptionKey as string }, generation));
+    saved = res.ok;
+    return res;
+  } finally {
+    backdropSlots.finish(deps.slotKey, generation, saved);
+  }
 }
 
 async function uploadAndSave(
@@ -138,8 +146,11 @@ async function uploadAndSave(
     digest = await backdropDigest(blob);
     meta = await (deps.upload ?? uploadBackdrop)(blob, deps.blossomUrl, deps.blossomConsent, deps.encryptionKey);
   } catch (err) {
+    // Failed before saving: an older send still in flight may save instead.
+    backdropSlots.settle(deps.slotKey, generation, 'failed');
     return { ok: false, reason: reasonFor(err) };
   }
+  backdropSlots.settle(deps.slotKey, generation, 'uploaded');
 
   const startKey = deps.encryptionKey;
   const live = () => {
@@ -157,27 +168,31 @@ async function uploadAndSave(
     });
   };
 
-  const saved = await backdropSlots.serial(deps.slotKey, async (): Promise<{ ok: true; previous?: { hash: string; server: string } } | { ok: false; reason: string }> => {
-    if (backdropSlots.current(deps.slotKey) !== generation) {
+  type Saved = { ok: true; previous?: { hash: string; server: string } } | { ok: false; reason: string };
+  const saved = await saveUnlessSuperseded<Saved>(backdropSlots, deps.slotKey, generation, {
+    superseded: () => {
       discard();
       return { ok: false, reason: BACKDROP_COPY.reasons.superseded };
-    }
-    if (!live()) {
-      // Locked (or re-unlocked under another key) mid-upload: save nothing.
-      discard();
-      return { ok: false, reason: BACKDROP_COPY.reasons.locked };
-    }
-    try {
-      const { previous } = await deps.saveSlot(meta, digest, () => backdropSlots.current(deps.slotKey) === generation);
-      return { ok: true, previous };
-    } catch {
-      // A lock during the save's own wait makes it refuse: that is a lock too,
-      // and so is an unpair or newer change that ran in that wait.
-      const locked = !live();
-      const superseded = backdropSlots.current(deps.slotKey) !== generation;
-      discard();
-      return { ok: false, reason: locked ? BACKDROP_COPY.reasons.locked : superseded ? BACKDROP_COPY.reasons.superseded : BACKDROP_COPY.reasons.failed };
-    }
+    },
+    save: async () => {
+      if (!live()) {
+        // Locked (or re-unlocked under another key) mid-upload: save nothing.
+        discard();
+        return { ok: false, reason: BACKDROP_COPY.reasons.locked };
+      }
+      const outranked = () => backdropSlots.superseded(deps.slotKey, generation);
+      try {
+        const { previous } = await deps.saveSlot(meta, digest, () => !outranked());
+        return { ok: true, previous };
+      } catch {
+        // A lock during the save's own wait makes it refuse: that is a lock too,
+        // and so is an unpair or newer change that ran in that wait.
+        const locked = !live();
+        const superseded = outranked();
+        discard();
+        return { ok: false, reason: locked ? BACKDROP_COPY.reasons.locked : superseded ? BACKDROP_COPY.reasons.superseded : BACKDROP_COPY.reasons.failed };
+      }
+    },
   });
   if (!saved.ok) return saved;
 
@@ -190,7 +205,7 @@ async function uploadAndSave(
 export async function removeBackdropFromChild(deps: Pick<BackdropSendDeps, 'slotKey' | 'saveSlot' | 'deleteBlob'>): Promise<void> {
   // Bumped before anything is awaited: an upload still in flight is now stale
   // and will discard itself, so a remove during a send wins.
-  backdropSlots.bump(deps.slotKey);
+  backdropSlots.bump(deps.slotKey, 'clear');
   const previous = await whileInFlight(deps.slotKey, () => backdropSlots.serial(deps.slotKey, async () => {
     try {
       return (await deps.saveSlot(null)).previous;
@@ -230,6 +245,26 @@ export interface DependantSlotsView extends Pick<DependantIdentity, 'hiddenOnPai
 }
 
 /**
+ * Whether the publisher sends the slot `target` (key `pubkey`) of `dep` to the
+ * paired phone, whether or not a phone is paired: `pairedDeviceAllows` (not
+ * removed from the phone, not hidden from it, not soft-deleted), and a
+ * real-name slot only while it is active. The inventory publisher's own rule;
+ * a slot this says no to never reaches the child, so a backdrop sent for it
+ * is cleared (`useDependants`).
+ */
+export function dependantSlotVisible(
+  dep: Pick<DependantSlotsView, 'hiddenOnPairedDeviceKeys' | 'childDevice' | 'naturalPersonActive' | 'naturalPerson' | 'persona'>,
+  target: string,
+  pubkey: string,
+  softDeleted: boolean,
+): boolean {
+  const allows = pairedDeviceAllows(dep);
+  return target === 'natural-person'
+    ? isDependantNaturalPersonActive(dep) && allows(pubkey)
+    : allows(pubkey, softDeleted);
+}
+
+/**
  * Which card pubkeys are a guardian's dependant slots, and how to send a
  * backdrop for each. Resolves by slot pubkey across every dependant (not by
  * carousel row type), so a dependant card on the guardian's home ring and the
@@ -260,10 +295,7 @@ export function buildDependantBackdropLookup(env: BackdropLinkEnv): (pubkey: str
       }
       if (target === null || !slot) continue;
       // Only for the matched dependant, so an unrelated record can never throw here.
-      const allows = pairedDeviceAllows(dep);
-      const visible = target === 'natural-person'
-        ? isDependantNaturalPersonActive(dep) && allows(pubkey)
-        : allows(pubkey, softDeleted);
+      const visible = dependantSlotVisible(dep, target, pubkey, softDeleted);
       // No phone paired: the inventory goes to nobody, so there is nothing to
       // send to and the backdrop stays device-local ("Only on this device").
       const canSend = !!dep.bunkerEndpoint?.authorizedClientPubkey && visible;

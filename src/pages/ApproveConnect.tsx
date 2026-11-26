@@ -565,7 +565,7 @@ export function ApproveConnect({
 
       {error && (
         <div className="card section" style={{ background: 'var(--danger-light)', borderColor: 'var(--danger)' }}>
-          <p style={{ fontSize: '0.85rem', color: 'var(--danger)', marginBottom: 0 }}>
+          <p style={{ fontSize: '0.85rem', color: 'var(--danger)', marginBottom: 0, overflowWrap: 'anywhere' }}>
             {error}
           </p>
         </div>

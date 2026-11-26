@@ -18,7 +18,7 @@ import { nextDependantPersonaName, dependantPersonaTombstones, applyDependantPer
 import { createSerialQueue } from '../lib/contacts-v2-queue';
 import { listIndependenceArchives } from '../lib/independence-store';
 import { sanitizeDisplayName } from '../lib/text-sanitize';
-import { supersedeBackdropSends } from '../lib/backdrop-send';
+import { supersedeBackdropSends, dependantSlotVisible } from '../lib/backdrop-send';
 import { collectSlotBlobsToDelete, deleteRemovedBlobs, type BlobDeleter, type SlotBlobToDelete } from '../lib/blob-deletion';
 
 // Serialize allocation/deletion across hook instances in this app.
@@ -64,6 +64,35 @@ function withoutBackdropPointers(dep: DependantIdentity): DependantIdentity | nu
     persona: { ...dep.persona, ...NO_BACKDROP },
     extraPersonas: dep.extraPersonas?.map(p => ({ ...p, ...NO_BACKDROP })),
   };
+}
+
+/**
+ * `dep` (as about to be saved) with the sent backdrop of the slot keyed
+ * `personaPubkey` cleared, when that slot is no longer one the phone gets
+ * (hidden from it, soft-deleted, removed from it). Its send generation is
+ * bumped so an upload still in flight discards itself, and its blob is handed
+ * back for deleting once the write has saved. The guardian's own `backdrop:`
+ * row and the slot's avatar are untouched, so the card still shows; putting
+ * the persona back makes the slot unsent again and the backfill resends it.
+ * Unchanged (`blobs` empty) when the slot is still sent or names no backdrop
+ * (the generation is bumped all the same when it is no longer sent).
+ */
+function withoutUnsendableBackdrop(dep: DependantIdentity, personaPubkey: string): { dep: DependantIdentity; blobs: SlotBlobToDelete[] } {
+  const pk = personaPubkey.toLowerCase();
+  // Persona first, as the backdrop lookup matches it (an imported persona's key may also be the real-name slot's).
+  const extra = (dep.extraPersonas ?? []).find(p => p.publicKey.toLowerCase() === pk);
+  const target: SlotTarget | null = dep.persona.publicKey.toLowerCase() === pk ? 'persona'
+    : dep.naturalPerson.publicKey.toLowerCase() === pk ? 'natural-person'
+    : extra ? extra.publicKey : null;
+  if (target === null) return { dep, blobs: [] };
+  const key = target === 'persona' ? dep.persona.publicKey : target === 'natural-person' ? dep.naturalPerson.publicKey : target;
+  if (dependantSlotVisible(dep, target, key, target !== 'persona' && target !== 'natural-person' && extra?.hidden === true)) return { dep, blobs: [] };
+  // Even with nothing sent yet: a first send still uploading must not save a pointer after this.
+  supersedeBackdropSends(dep.id, [target]);
+  const slot = findSlot(dep, target);
+  if (!slot || !slotHasBackdrop(slot)) return { dep, blobs: [] };
+  const blobs = collectSlotBlobsToDelete(dep, ['backdrop'], [target]);
+  return { dep: patchSlot(dep, target, NO_BACKDROP), blobs };
 }
 
 /**
@@ -910,16 +939,21 @@ export function useDependants(
     visible: boolean,
   ) => {
     if (!encryptionKey) throw new Error('Encryption key required');
-    await mutate(depPubkey, encryptionKey, dep => {
+    let blobs: SlotBlobToDelete[] = [];
+    const saved = await mutate(depPubkey, encryptionKey, dep => {
       if (!dep) return null;
       const current = dep.hiddenOnPairedDeviceKeys ?? [];
       const next: string[] = visible
         ? current.filter(k => k !== personaPubkey)
         : current.includes(personaPubkey) ? current : [...current, personaPubkey];
-      return { ...dep, hiddenOnPairedDeviceKeys: next };
+      // Hidden from the phone: what was sent for it goes too.
+      const out = withoutUnsendableBackdrop({ ...dep, hiddenOnPairedDeviceKeys: next }, personaPubkey);
+      blobs = out.blobs;
+      return out.dep;
     });
+    if (saved) void deleteGoneBlobs(blobs);
     await loadDependants();
-  }, [mutate, encryptionKey, loadDependants]);
+  }, [mutate, encryptionKey, loadDependants, deleteGoneBlobs]);
 
   /**
    * Hard-delete an extra persona from a dependant record. Mirror of
@@ -980,12 +1014,44 @@ export function useDependants(
     hidden: boolean,
   ) => {
     if (!encryptionKey) throw new Error('Encryption key required');
-    await mutate(depPubkey, encryptionKey, dep => dep && {
-      ...dep,
-      extraPersonas: (dep.extraPersonas ?? []).map(p => (p.publicKey === personaPubkey ? { ...p, hidden } : p)),
+    let blobs: SlotBlobToDelete[] = [];
+    const saved = await mutate(depPubkey, encryptionKey, dep => {
+      if (!dep) return null;
+      // A soft-deleted extra is not sent to the phone: its sent backdrop goes.
+      const out = withoutUnsendableBackdrop({
+        ...dep,
+        extraPersonas: (dep.extraPersonas ?? []).map(p => (p.publicKey === personaPubkey ? { ...p, hidden } : p)),
+      }, personaPubkey);
+      blobs = out.blobs;
+      return out.dep;
     });
+    if (saved) void deleteGoneBlobs(blobs);
     await loadDependants();
-  }, [mutate, encryptionKey, loadDependants]);
+  }, [mutate, encryptionKey, loadDependants, deleteGoneBlobs]);
+
+  /**
+   * A51 "Remove from phone" on a child-direct pairing: list the persona in
+   * `childDevice.removedPersonas` (the phone stops offering it) and clear the
+   * backdrop sent for it. The caller has revoked it on the Heartwood first.
+   * Resolves false when the dependant has no child device.
+   */
+  const removeChildDevicePersona = useCallback(async (
+    depPubkey: string,
+    personaPubkey: string,
+    key: string,
+  ): Promise<boolean> => {
+    let blobs: SlotBlobToDelete[] = [];
+    const saved = await mutate(depPubkey, key, fresh => {
+      if (!fresh?.childDevice) return null;
+      const removed = [...new Set([...(fresh.childDevice.removedPersonas ?? []), personaPubkey.toLowerCase()])];
+      const out = withoutUnsendableBackdrop({ ...fresh, childDevice: { ...fresh.childDevice, removedPersonas: removed } }, personaPubkey);
+      blobs = out.blobs;
+      return out.dep;
+    });
+    if (!saved) return false;
+    void deleteGoneBlobs(blobs);
+    return true;
+  }, [mutate, deleteGoneBlobs]);
 
   /**
    * Return the dependant's NIP-46 transport keypair, generating + persisting
@@ -1208,5 +1274,5 @@ export function useDependants(
     fn: (dep: DependantIdentity | null) => DependantIdentity | null,
   ) => mutate(depId, key, fn), [mutate]);
 
-  return { dependants, loading, loadedWithKey, addDependant, importDependant, removeDependant, updateAutonomyStage, updateAuditVisibility, updatePetitionOnDeny, updateDependantName, updateDependantPhoto, switchDependantPrimary, updateDependantPersonaName, activateDependantNaturalPerson, addDependantPersona, updatePersonaVisibility, setDepExtraPersonaHidden, removeDependantExtraPersona, reorderDependants, ensureDependantBunkerEndpoint, clearDependantBunkerEndpoint, clearDependantBackdrops, saveDependantPairingSecret, bindDependantBunkerClient, setDependantPersonaAvatar, clearDependantPersonaAvatar, setDependantPersonaContactAvatar, clearDependantPersonaContactAvatar, setDependantPersonaBackdrop, setDependantPersonaPublicProfile, clearDependantPersonaPublicProfile, setDependantSlotNip05Check, reload: loadDependants, loadFreshDependants, mutateDependantRecord };
+  return { dependants, loading, loadedWithKey, addDependant, importDependant, removeDependant, updateAutonomyStage, updateAuditVisibility, updatePetitionOnDeny, updateDependantName, updateDependantPhoto, switchDependantPrimary, updateDependantPersonaName, activateDependantNaturalPerson, addDependantPersona, updatePersonaVisibility, setDepExtraPersonaHidden, removeDependantExtraPersona, removeChildDevicePersona, reorderDependants, ensureDependantBunkerEndpoint, clearDependantBunkerEndpoint, clearDependantBackdrops, saveDependantPairingSecret, bindDependantBunkerClient, setDependantPersonaAvatar, clearDependantPersonaAvatar, setDependantPersonaContactAvatar, clearDependantPersonaContactAvatar, setDependantPersonaBackdrop, setDependantPersonaPublicProfile, clearDependantPersonaPublicProfile, setDependantSlotNip05Check, reload: loadDependants, loadFreshDependants, mutateDependantRecord };
 }

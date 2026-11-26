@@ -414,6 +414,8 @@ import { useChildRulesSync } from './hooks/useChildRulesSync';
 import { useChildRulesPublisher } from './hooks/useChildRulesPublisher';
 import { useChildActivityPublisher } from './hooks/useChildActivityPublisher';
 import { buildUnpairedNotice } from './lib/child-activity';
+import { clearThenPublishLegacyUnpair, legacyUnpairTarget, type LegacyUnpairTarget } from './lib/legacy-child-unpair';
+import { useLegacyChildUnpaired } from './hooks/useLegacyChildUnpaired';
 import { pendingRuleSeeds, phoneServedDependants, usesChildDirectPairing } from './lib/child-device-pairing';
 import { useChildAsks, type PendingChildAsk } from './hooks/useChildAsks';
 import { createSerialQueue } from './lib/contacts-v2-queue';
@@ -750,7 +752,9 @@ function AppContent() {
   // `no-store`, so each update() reliably picks up the new worker.
   const { needRefresh, updateServiceWorker } = useSwUpdate();
 
-  const { identity, loading: identityLoading, create, restore, restoreWithProfile, importNsec, importLiteMnemonic, addImportedPersona, addImportedPersonas, addHeartwoodKeyPersona, markBackedUp, switchPrimary, activateNaturalPerson, updatePhoto, updateDisplayName: updateDisplayNameRaw, addPersona: addPersonaRaw, setExtraPersonaHidden, removeExtraPersona, reorderExtraPersonas, applyRemotePersonas, setPersonaAvatar, clearPersonaAvatar, setPersonaContactAvatar, clearPersonaContactAvatar, setPersonaPublicProfile, clearPersonaPublicProfile, setSlotNip05Check, setSlotFollowsImport, reload: reloadIdentity } = useIdentity(encryptionKey);
+  const { identity, loading: identityLoading, create, restore, restoreWithProfile, importNsec, importLiteMnemonic, addImportedPersona, addImportedPersonas, addHeartwoodKeyPersona, markBackedUp, switchPrimary, activateNaturalPerson, updatePhoto, updateDisplayName: updateDisplayNameRaw, addPersona: addPersonaRaw, setExtraPersonaHidden, removeExtraPersona, reorderExtraPersonas, applyRemotePersonas, setPersonaAvatar, clearPersonaAvatar, setPersonaContactAvatar, clearPersonaContactAvatar, setPersonaPublicProfile, clearPersonaPublicProfile, setSlotNip05Check, setSlotFollowsImport, reload: reloadIdentity } = useIdentity(encryptionKey,
+    // `deleteOwnBlob` is declared further down; it only runs when a persona is deleted.
+    { deleteBlob: (domain, hash, server) => deleteOwnBlob(domain, hash, server) });
   const activePubkey = identity ? getActivePubkey(identity) : undefined;
   const npActive = identity ? isNaturalPersonActive(identity) : false;
   // Session-level hide for the Android app promo. Snooze persistence lives in
@@ -933,7 +937,7 @@ function AppContent() {
   // Always use NP pubkey for dependant lookup — dependants are stored with guardianPubkey
   // as the NP key, so switching to persona must not lose sight of them.
   const guardianNpPubkey = identity?.naturalPerson.publicKey;
-  const { dependants, loading: dependantsLoading, loadedWithKey: dependantsLoadedWithKey, addDependant, importDependant, removeDependant: removeDependantRecord, updateAutonomyStage, updateAuditVisibility, updatePetitionOnDeny, updateDependantName, updateDependantPhoto, switchDependantPrimary, updateDependantPersonaName, activateDependantNaturalPerson, addDependantPersona, updatePersonaVisibility, removeDependantExtraPersona, reorderDependants, ensureDependantBunkerEndpoint, clearDependantBunkerEndpoint, saveDependantPairingSecret, bindDependantBunkerClient, setDependantPersonaAvatar, clearDependantPersonaAvatar, setDependantPersonaContactAvatar, clearDependantPersonaContactAvatar, setDependantPersonaBackdrop, setDependantPersonaPublicProfile, clearDependantPersonaPublicProfile, setDependantSlotNip05Check, setDepExtraPersonaHidden, reload: reloadDependants, loadFreshDependants, mutateDependantRecord, clearDependantBackdrops } = useDependants(
+  const { dependants, loading: dependantsLoading, loadedWithKey: dependantsLoadedWithKey, addDependant, importDependant, removeDependant: removeDependantRecord, updateAutonomyStage, updateAuditVisibility, updatePetitionOnDeny, updateDependantName, updateDependantPhoto, switchDependantPrimary, updateDependantPersonaName, activateDependantNaturalPerson, addDependantPersona, updatePersonaVisibility, removeDependantExtraPersona, removeChildDevicePersona, reorderDependants, ensureDependantBunkerEndpoint, clearDependantBunkerEndpoint, saveDependantPairingSecret, bindDependantBunkerClient, setDependantPersonaAvatar, clearDependantPersonaAvatar, setDependantPersonaContactAvatar, clearDependantPersonaContactAvatar, setDependantPersonaBackdrop, setDependantPersonaPublicProfile, clearDependantPersonaPublicProfile, setDependantSlotNip05Check, setDepExtraPersonaHidden, reload: reloadDependants, loadFreshDependants, mutateDependantRecord, clearDependantBackdrops } = useDependants(
     guardianNpPubkey, identity?.id, encryptionKey,
     // `deleteOwnBlob` is declared just below; it only runs when a removal or an unpair fires.
     { deleteBlob: (domain, hash, server) => deleteOwnBlob(domain, hash, server) },
@@ -2448,12 +2452,21 @@ function AppContent() {
     withheldSlots: slotResolveOpts.withheld,
     onRecordUpdated: async (r) => { await setPairedChildIdentityApprovals(r.id, r.identityApprovals ?? {}, r.identityPressedAt ?? {}); },
   });
+  // A legacy phone-paired child learns of a Revoke from the guardian's
+  // unpaired notice (the direct reader is `childDeviceLink`). Either way the
+  // phone is "unpaired": banner, card notice with Pair again, no guardian backdrops.
+  const legacyChildUnpaired = useLegacyChildUnpaired({
+    record: preferences.signingMode === 'paired-child' ? pairedChildRecord : null,
+    encryptionKey,
+    relayUrl: preferences.relayUrl ?? DEFAULT_RELAY_URL,
+  });
+  const childUnpaired = childDeviceLink.unpaired || legacyChildUnpaired;
   // The guardian's card backdrops for this child's personas: fetched while
   // unlocked on a paired-child install, retried on every inventory apply. Not
   // once the guardian has unpaired this phone: `markUnpaired` just dropped the
   // rows, and the stored slots still name the (deleted) blobs.
   useGuardianBackdrops({
-    enabled: preferences.signingMode === 'paired-child' && !!encryptionKey && !childDeviceLink.unpaired,
+    enabled: preferences.signingMode === 'paired-child' && !!encryptionKey && !childUnpaired,
     encryptionKey,
     identity,
     mergeCount: inventoryMergeCount,
@@ -12307,9 +12320,9 @@ function AppContent() {
       />
     );
   };
-  const childApprovalsBanner = (childDeviceLink.unpaired || childReadyVisible || (childDirect && childTransportKeysUnreadable)) ? (
+  const childApprovalsBanner = (childUnpaired || childReadyVisible || (childDirect && childTransportKeysUnreadable)) ? (
     <>
-      {childDeviceLink.unpaired ? (
+      {childUnpaired ? (
         <div role="alert" style={{ background: 'var(--bg-secondary)', padding: '8px 16px', fontSize: 13, color: 'var(--text-secondary)', display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 12 }}>
           <span>{CHILD_SIDE_COPY.unpaired}</span>
           <button className="btn btn-secondary btn-sm" style={{ flexShrink: 0 }} onClick={() => navigateTo('paired-child-repair')}>{CHILD_SIDE_COPY.pairAgain}</button>
@@ -13736,7 +13749,9 @@ function AppContent() {
           if (depPubkey) {
             await removeDependantExtraPersona(depPubkey, pubkey);
           } else {
-            await removeExtraPersona(pubkey);
+            // Its avatar and backdrop blobs go once the slot is gone (best
+            // effort, never awaited here: it cannot hold or fail the delete).
+            void (await removeExtraPersona(pubkey)).deletion;
           }
           // Its device-local card backdrop goes with it.
           await forgetCardBackdrop(pubkey);
@@ -13819,7 +13834,15 @@ function AppContent() {
             await contactsV2.reload();
           }
           await retractDepProfilesBeforePurge(dep);
-          await removeDependant(depPubkey);
+          // A legacy phone-paired child is told once the record is gone (never
+          // before: see `clearThenPublishLegacyUnpair`). The endpoint is read
+          // from the record as stored now, and captured before the delete.
+          let unpairTarget: LegacyUnpairTarget | null = null;
+          try {
+            const stored = encryptionKey ? (await loadFreshDependants(encryptionKey)).find(d => d.id === depPubkey) : undefined;
+            unpairTarget = legacyUnpairTarget(stored ?? dep, [preferences.relayUrl ?? DEFAULT_RELAY_URL]);
+          } catch { /* best effort */ }
+          await clearThenPublishLegacyUnpair(unpairTarget, () => removeDependant(depPubkey));
           navigateBack();
         } : undefined}
         contactsLoading={familyContacts.loading}
@@ -15578,7 +15601,20 @@ function AppContent() {
           clearDependantBunkerEndpoint={async (pubkey) => {
             const key = encryptionKey || await requestAuth({ purpose: 'manage-dependant', action: 'pair-device', depName: activeDependant.displayName });
             if (!key) throw new Error('Authentication required');
-            return clearDependantBunkerEndpoint(pubkey, key);
+            // Once the endpoint has gone, tell the child's phone it was revoked:
+            // the unpaired notice, signed by the endpoint key, addressed to the
+            // phone's client key, on the inventory's relays. What it needs is
+            // captured here, BEFORE the clear, and it is published only after
+            // the clear has saved: a notice for an endpoint that survived
+            // would undo a re-pair onto it. Best effort and capped at 5 s;
+            // offline or refused, the revoke still completes.
+            let target: LegacyUnpairTarget | null = null;
+            try {
+              const fresh = (await loadFreshDependants(key)).find(d => d.id === pubkey);
+              // Legacy pairings only: a direct (Heartwood) one has its own notice.
+              target = legacyUnpairTarget(fresh, [preferences.relayUrl ?? DEFAULT_RELAY_URL]);
+            } catch { /* best effort */ }
+            return clearThenPublishLegacyUnpair(target, () => clearDependantBunkerEndpoint(pubkey, key));
           }}
           saveDependantPairingSecret={async (pubkey, secret) => {
             const key = encryptionKey || await requestAuth({ purpose: 'manage-dependant', action: 'pair-device', depName: activeDependant.displayName });
@@ -15655,12 +15691,8 @@ function AppContent() {
               // A51: the phone stops offering it too — the rules payload's `personas` drops it.
               const key = encryptionKey || await requestAuth({ purpose: 'manage-dependant', action: 'permissions', depName: dep.displayName });
               if (!key) throw new Error('Authentication required');
-              const saved = await mutateDependantRecord(dep.id, key, fresh => {
-                if (!fresh?.childDevice) return null;
-                const removed = [...new Set([...(fresh.childDevice.removedPersonas ?? []), persona.toLowerCase()])];
-                return { ...fresh, childDevice: { ...fresh.childDevice, removedPersonas: removed } };
-              });
-              if (saved) await reloadDependants();
+              // The backdrop sent for it is cleared and its blob deleted; the card keeps it.
+              if (await removeChildDevicePersona(dep.id, persona, key)) await reloadDependants();
             }}
             onOpenStage={() => openPersonaAdvanced({ slotTarget: resolveDependantCardSlot(dep).slotTarget, depPubkey: dep.id })}
             onUnpaired={() => navigateBack()}
@@ -16108,7 +16140,7 @@ function AppContent() {
         addPersonaHeartwoodHold={heartwoodHoldCount > 0}
         onAddDependant={() => navigateTo('add-dependant')}
         childDormant={preferences.signingMode === 'paired-child' && childIsDormant}
-        childSignerKind={childSignerKind({ signingMode: preferences.signingMode, direct: childDirect, routerUp: !!bunkerRouter, unlocked: !!encryptionKey, stalled: childConnectStalled, lost: childHeartwoodLost, unpaired: childDeviceLink.unpaired })}
+        childSignerKind={childSignerKind({ signingMode: preferences.signingMode, direct: childDirect, routerUp: !!bunkerRouter, unlocked: !!encryptionKey, stalled: childConnectStalled, lost: childHeartwoodLost, unpaired: childUnpaired })}
         onPairAgain={() => navigateTo('paired-child-repair')}
         cachedGuardianName={cachedGuardianName}
         dependantById={Object.fromEntries(dependants.map(d => [d.id, d]))}

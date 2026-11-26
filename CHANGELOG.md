@@ -13,6 +13,10 @@ section for the version being published (`release_notes` in zapstore.yaml).
 - Renaming a dependant's real identity now shows on their phone
 - Fix: changes to a dependant made at the same moment, for example a backdrop and a sync from your other phone, no longer undo each other
 - Fix: a picture still uploading when the app locks is no longer left on the server; it is deleted the next time you unlock. Profile pictures now get the same protection as backdrops, and the newest change always wins
+- Deleting one of your personas now deletes its private picture from the picture server (a published Nostr profile picture follows its own rules; its backdrop never left your phone)
+- Hiding a persona from a child's phone, or removing it from the phone, deletes the backdrop sent for it; the card on your phone keeps it, and it is sent again when you put the persona back
+- A child's phone paired to your phone (not to a Heartwood) now shows that it was unpaired when you revoke it, with a button to pair again. Removing the dependant does the same. If your phone is offline at the time, the revoke or removal still goes ahead and the child's phone is not told
+- Fix: if a newer picture fails to upload, the one you picked just before it is now saved instead of being dropped
 
 ## 0.31.0
 
