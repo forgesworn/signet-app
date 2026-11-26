@@ -350,7 +350,10 @@ export function useDependants(
       }
     }
     await deleteGrantsForDependant(pubkey);
-    await deleteDependant(pubkey);
+    // The row is read again inside the deleting step: a picture saved since the
+    // read above points at a blob only this read knows about.
+    const removed = await deleteDependant(pubkey, opts?.keepBlobs ? undefined : liveKeyRef.current ?? undefined);
+    if (removed) dep = removed;
     // Device-local card backdrops for every key the dependant could show a
     // card for (the dependant row's own key, its default persona, its extras).
     if (dep) {

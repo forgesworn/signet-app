@@ -2477,10 +2477,22 @@ export async function loadDependantSignInFacts(dependantId: string): Promise<{ i
   };
 }
 
-export function deleteDependant(pubkey: string): Promise<void> {
+/**
+ * Delete one dependant row, queued. With the unlock key, resolves with the
+ * record as it stood at the moment of deletion (read inside the same queued
+ * step, so a write that landed just before it is in it), or null when it could
+ * not be read or was not there. A caller that must act on what the row held
+ * (delete the blobs it pointed at) uses that instead of an earlier read.
+ */
+export function deleteDependant(pubkey: string, encryptionKey?: string): Promise<DependantIdentity | null> {
   return runDependantWrite(async () => {
+    let removed: DependantIdentity | null = null;
+    if (encryptionKey) {
+      try { removed = await readDependantForWrite(pubkey, encryptionKey); } catch { removed = null; }
+    }
     const db = await getDB();
     await db.delete('identity', DEPENDANT_PREFIX + pubkey);
+    return removed;
   });
 }
 

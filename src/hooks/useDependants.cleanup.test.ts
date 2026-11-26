@@ -86,6 +86,23 @@ describe('removeDependant: blob cleanup', () => {
     expect(await orphanHashes()).toEqual([]);
   }, 60_000);
 
+  it('collects a blob saved while the removal was under way (read inside the deleting step, not before)', async () => {
+    const calls: Call[] = [];
+    const del = vi.fn(async (...c: Call): Promise<DeleteOutcome> => { calls.push(c); return 'deleted'; });
+    const s = await setup(del);
+    let out!: Awaited<ReturnType<typeof s.hook.result.current.removeDependant>>;
+    await act(async () => {
+      const removing = s.hook.result.current.removeDependant(s.dep.id);
+      // Queued behind the removal's own read, so it lands before the row is deleted.
+      const saving = s.hook.result.current.setDependantPersonaAvatar(s.dep.id, 'persona', av('a'));
+      await saving;
+      out = await removing;
+    });
+    await out.deletion;
+    expect(calls.map(c => c[1])).toContain(h('a'));
+    expect(await orphanHashes()).toEqual([]);
+  }, 60_000);
+
   it('keeps a blob the deleter reports as still referenced (R1), and records nothing for it', async () => {
     const del = vi.fn(async (_d: string, hash: string): Promise<DeleteOutcome> => (hash === h('5') ? 'kept' : 'deleted'));
     const s = await setup(del);
