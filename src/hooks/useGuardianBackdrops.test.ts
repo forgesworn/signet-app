@@ -21,19 +21,19 @@ beforeEach(() => { sync.calls.length = 0; });
 
 describe('useGuardianBackdrops', () => {
   it('never runs when disabled (a guardian\'s install, or locked)', () => {
-    renderHook(() => useGuardianBackdrops({ enabled: false, identity: ident('1'.repeat(64)) }));
+    renderHook(() => useGuardianBackdrops({ enabled: false, encryptionKey: 'k', identity: ident('1'.repeat(64)) }));
     expect(sync.calls).toHaveLength(0);
   });
 
   it('runs once when enabled, and not on a re-render with the same pointers', () => {
-    const { rerender } = renderHook(({ id }) => useGuardianBackdrops({ enabled: true, identity: id }), { initialProps: { id: ident('1'.repeat(64)) } });
+    const { rerender } = renderHook(({ id }) => useGuardianBackdrops({ enabled: true, encryptionKey: 'k', identity: id }), { initialProps: { id: ident('1'.repeat(64)) } });
     expect(sync.calls).toHaveLength(1);
     rerender({ id: ident('1'.repeat(64)) });
     expect(sync.calls).toHaveLength(1);
   });
 
   it('runs again when a pointer changes, and when an inventory merge lands with nothing changed (retry)', () => {
-    const { rerender } = renderHook(({ id, n }) => useGuardianBackdrops({ enabled: true, identity: id, mergeCount: n }), { initialProps: { id: ident('1'.repeat(64)), n: 0 } });
+    const { rerender } = renderHook(({ id, n }) => useGuardianBackdrops({ enabled: true, encryptionKey: 'k', identity: id, mergeCount: n }), { initialProps: { id: ident('1'.repeat(64)), n: 0 } });
     rerender({ id: ident('2'.repeat(64)), n: 0 });
     expect(sync.calls).toHaveLength(2);
     rerender({ id: ident('2'.repeat(64)), n: 1 });
@@ -41,7 +41,7 @@ describe('useGuardianBackdrops', () => {
   });
 
   it('cancels the run at lock or unmount', () => {
-    const { rerender, unmount } = renderHook(({ on }) => useGuardianBackdrops({ enabled: on, identity: ident('1'.repeat(64)) }), { initialProps: { on: true } });
+    const { rerender, unmount } = renderHook(({ on }) => useGuardianBackdrops({ enabled: on, encryptionKey: 'k', identity: ident('1'.repeat(64)) }), { initialProps: { on: true } });
     const first = sync.calls[0];
     expect(first.isLive()).toBe(true);
     rerender({ on: false });

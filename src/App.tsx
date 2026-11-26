@@ -2217,6 +2217,7 @@ function AppContent() {
   // unlocked on a paired-child install, retried on every inventory apply.
   useGuardianBackdrops({
     enabled: preferences.signingMode === 'paired-child' && !!encryptionKey,
+    encryptionKey,
     identity,
     mergeCount: inventoryMergeCount,
   });

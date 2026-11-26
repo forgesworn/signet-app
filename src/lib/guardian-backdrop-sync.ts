@@ -44,24 +44,52 @@ export interface GuardianBackdropDeps {
   deleteGuardianBackdrop: (pubkey: string) => Promise<void>;
   deleteOwnBackdrop: (pubkey: string) => Promise<void>;
   listRowPubkeys: () => Promise<{ own: string[]; guardian: string[] }>;
+  /**
+   * Every pubkey that may legitimately own a backdrop row on this device: the
+   * slots (and id) of EVERY paired-child account it holds, not just the active
+   * one, so switching account never loses the others' pictures. Null when it
+   * cannot be proved, which skips the sweep.
+   */
+  loadDeviceKeepSet: () => Promise<Set<string> | null>;
   /** Re-read both rows for the pubkey and repaint every card of it. */
   refresh: (pubkey: string) => Promise<void>;
   /** False once the run has been cancelled (lock, unmount): nothing more is stored or painted. */
   isLive: () => boolean;
 }
 
-export const defaultGuardianBackdropDeps = (isLive: () => boolean): GuardianBackdropDeps => ({
+async function deviceKeepSet(encryptionKey: string): Promise<Set<string> | null> {
+  try {
+    const keep = new Set<string>();
+    for (const meta of await db.listPairedChildMetas()) {
+      keep.add(meta.dependantPubkey);
+      const stored = await db.loadIdentityDecrypted(meta.dependantPubkey, encryptionKey);
+      if (stored) for (const slot of slotsOf(stored)) keep.add(slot.pubkey);
+    }
+    return keep;
+  } catch {
+    return null;
+  }
+}
+
+export const defaultGuardianBackdropDeps = (isLive: () => boolean, encryptionKey: string): GuardianBackdropDeps => ({
   fetchBackdrop: defaultFetchBackdrop,
   getGuardianBackdrop: db.getGuardianBackdrop,
   setGuardianBackdrop: db.setGuardianBackdrop,
   deleteGuardianBackdrop: db.deleteGuardianBackdrop,
   deleteOwnBackdrop: db.deleteCardBackdrop,
   listRowPubkeys: db.listBackdropRowPubkeys,
+  loadDeviceKeepSet: () => deviceKeepSet(encryptionKey),
   refresh: refreshCardBackdrop,
   isLive,
 });
 
-/** Every slot with a key, persona first, and the backdrop it points at (a half-formed pointer counts as none). */
+/**
+ * Every slot with a key, persona first, and the backdrop it points at (a
+ * half-formed pointer counts as none). One entry per pubkey: a key shared by two
+ * slots (an imported persona aliasing the real-name slot) is one picture, and a
+ * pointer on either slot wins over none, so a run never stores the row and then
+ * deletes it.
+ */
 export function slotsOf(identity: IdentityView): SlotView[] {
   const out: SlotView[] = [];
   const add = (slot: SlotLike | undefined) => {
@@ -69,6 +97,8 @@ export function slotsOf(identity: IdentityView): SlotView[] {
     const pointer = slot.backdropHash && slot.backdropBlossomUrl && slot.backdropKey
       ? { hash: slot.backdropHash, blossomUrl: slot.backdropBlossomUrl, keyHex: slot.backdropKey }
       : null;
+    const seen = out.find(s => s.pubkey === slot.publicKey);
+    if (seen) { if (!seen.pointer) seen.pointer = pointer; return; }
     out.push({ pubkey: slot.publicKey, pointer });
   };
   add(identity.persona);
@@ -78,8 +108,18 @@ export function slotsOf(identity: IdentityView): SlotView[] {
 }
 
 // Module-level so two overlapping runs (an unlock and a merge landing together)
-// never fetch the same picture twice.
-const inFlight = new Map<string, Promise<void>>();
+// never fetch the same picture twice. Only the FETCH is shared: each run does
+// its own liveness check, store and repaint, so a run that joins a cancelled
+// run's fetch still stores the picture.
+const fetches = new Map<string, Promise<Blob>>();
+
+function sharedFetch(key: string, start: () => Promise<Blob>): Promise<Blob> {
+  const running = fetches.get(key);
+  if (running) return running;
+  const p = start().finally(() => { fetches.delete(key); });
+  fetches.set(key, p);
+  return p;
+}
 
 async function syncSlot(slot: SlotView, deps: GuardianBackdropDeps): Promise<void> {
   const { pubkey, pointer } = slot;
@@ -91,17 +131,10 @@ async function syncSlot(slot: SlotView, deps: GuardianBackdropDeps): Promise<voi
     return;
   }
   if (stored?.hash === pointer.hash) return;
-  const flightKey = `${pubkey}:${pointer.hash}`;
-  const running = inFlight.get(flightKey);
-  if (running) { await running; return; }
-  const run = (async () => {
-    const blob = await deps.fetchBackdrop(pointer);
-    if (!deps.isLive()) return;
-    await deps.setGuardianBackdrop(pubkey, blob, pointer.hash);
-    await deps.refresh(pubkey);
-  })().finally(() => { inFlight.delete(flightKey); });
-  inFlight.set(flightKey, run);
-  await run;
+  const blob = await sharedFetch(`${pubkey}:${pointer.hash}`, () => deps.fetchBackdrop(pointer));
+  if (!deps.isLive()) return;
+  await deps.setGuardianBackdrop(pubkey, blob, pointer.hash);
+  await deps.refresh(pubkey);
 }
 
 /** Bring the guardian-backdrop rows in line with the stored identity's slots. Never throws. */
@@ -122,7 +155,10 @@ export async function syncGuardianBackdrops(identity: IdentityView | null, deps:
 
   if (!deps.isLive()) return;
   try {
-    const keep = new Set([identity.id, ...slots.map(s => s.pubkey)]);
+    const everyone = await deps.loadDeviceKeepSet();
+    // Cannot prove which pubkeys belong to the device's other accounts: sweep nothing.
+    if (!everyone) return;
+    const keep = new Set([identity.id, ...slots.map(s => s.pubkey), ...everyone]);
     const rows = await deps.listRowPubkeys();
     const departed = new Set([...rows.own, ...rows.guardian].filter(pk => !keep.has(pk)));
     for (const pubkey of departed) {

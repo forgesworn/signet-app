@@ -24,6 +24,7 @@ function makeDeps(rows: { own?: string[]; guardian?: Record<string, string> } = 
     deleteGuardianBackdrop: vi.fn(async (pk: string) => { guardian.delete(pk); }),
     deleteOwnBackdrop: vi.fn(async (pk: string) => { own.delete(pk); }),
     listRowPubkeys: vi.fn(async () => ({ own: [...own], guardian: [...guardian.keys()] })),
+    loadDeviceKeepSet: vi.fn(async () => new Set<string>()),
     refresh: vi.fn(async (pk: string) => { refreshed.push(pk); }),
     isLive: () => true,
     ...over,
@@ -135,6 +136,46 @@ describe('syncGuardianBackdrops', () => {
     await Promise.all([a, b]);
     expect(slow).toHaveBeenCalledTimes(1);
   });
+
+  it('a live run that joins a cancelled run\'s fetch still stores the picture (one fetch)', async () => {
+    let release!: (b: Blob) => void;
+    const slow = vi.fn(() => new Promise<Blob>(r => { release = r; }));
+    let aLive = true;
+    const { deps: depsA, guardian } = makeDeps({}, { fetchBackdrop: slow, isLive: () => aLive });
+    const depsB: GuardianBackdropDeps = { ...depsA, isLive: () => true };
+    const a = syncGuardianBackdrops(identity(), depsA);
+    await new Promise(r => setTimeout(r, 0));
+    aLive = false;                                   // another inventory event cancelled run A
+    const b = syncGuardianBackdrops(identity(), depsB);
+    await new Promise(r => setTimeout(r, 0));
+    release(BLOB);
+    await Promise.all([a, b]);
+    expect(slow).toHaveBeenCalledTimes(1);
+    expect(guardian.get(PERSONA)).toBe(H('1'));
+  });
+
+  it('keeps the other paired children\'s pictures: rows for pubkeys on the device\'s other accounts survive the sweep', async () => {
+    const OTHER = 'e'.repeat(64);
+    const { deps, own, guardian } = makeDeps({ own: [OTHER, GONE], guardian: { [OTHER]: H('8') } }, { loadDeviceKeepSet: vi.fn(async () => new Set([OTHER])) });
+    await syncGuardianBackdrops(identity(), deps);
+    expect(own.has(OTHER)).toBe(true);
+    expect(guardian.has(OTHER)).toBe(true);
+    expect(own.has(GONE)).toBe(false);
+  });
+
+  it('sweeps nothing when the device\'s other accounts cannot be read', async () => {
+    const { deps, own } = makeDeps({ own: [GONE] }, { loadDeviceKeepSet: vi.fn(async () => null) });
+    await syncGuardianBackdrops(identity(), deps);
+    expect(own.has(GONE)).toBe(true);
+    expect(deps.deleteOwnBackdrop).not.toHaveBeenCalled();
+  });
+
+  it('a key shared by two slots is one picture: the pointer wins, and the row is stored and kept', async () => {
+    const { deps, guardian } = makeDeps();
+    await syncGuardianBackdrops(identity({ naturalPerson: { publicKey: PERSONA } }), deps);
+    expect(guardian.get(PERSONA)).toBe(H('1'));
+    expect(deps.deleteGuardianBackdrop).not.toHaveBeenCalled();
+  });
 });
 
 describe('slotsOf', () => {
@@ -146,6 +187,13 @@ describe('slotsOf', () => {
 
   it('treats a half-formed pointer as none, and lowercases nothing it did not get', () => {
     expect(slotsOf(identity({ persona: { publicKey: PERSONA, backdropHash: H('1') } }))[0].pointer).toBeNull();
+  });
+
+  it('lists a pubkey once, with the pointer from whichever slot has one', () => {
+    const slots = slotsOf(identity({ naturalPerson: { publicKey: PERSONA }, persona: { publicKey: PERSONA } }));
+    expect(slots.filter(s => s.pubkey === PERSONA)).toHaveLength(1);
+    const reversed = slotsOf(identity({ persona: { publicKey: PERSONA }, naturalPerson: { publicKey: PERSONA, ...bd('4') } }));
+    expect(reversed.find(s => s.pubkey === PERSONA)!.pointer?.hash).toBe(H('4'));
   });
 
   it('skips a slot with no key yet (a dormant real identity)', () => {

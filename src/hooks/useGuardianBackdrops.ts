@@ -7,8 +7,10 @@ import { defaultGuardianBackdropDeps, slotsOf, syncGuardianBackdrops, type Ident
  * or the set of slots changes (`onInventoryMerged` reloads the identity), and
  * stops at lock (the caller disables it) and retries on every merge. See `guardian-backdrop-sync.ts`.
  */
-export function useGuardianBackdrops({ enabled, identity, mergeCount = 0 }: {
+export function useGuardianBackdrops({ enabled, encryptionKey, identity, mergeCount = 0 }: {
   enabled: boolean;
+  /** The unlock key, to read the device's other paired-child identities for the cleanup sweep. */
+  encryptionKey: string | null;
   identity: IdentityView | null;
   /** Bumped after every inventory merge, so a fetch that failed is retried on the next apply even when no pointer changed. */
   mergeCount?: number;
@@ -19,10 +21,10 @@ export function useGuardianBackdrops({ enabled, identity, mergeCount = 0 }: {
     : '';
 
   useEffect(() => {
-    if (!enabled || !identity) return;
+    if (!enabled || !identity || !encryptionKey) return;
     let live = true;
-    void syncGuardianBackdrops(identity, defaultGuardianBackdropDeps(() => live));
+    void syncGuardianBackdrops(identity, defaultGuardianBackdropDeps(() => live, encryptionKey));
     return () => { live = false; };
     // `fingerprint` captures everything the sync reads from `identity`.
-  }, [enabled, fingerprint, mergeCount]);
+  }, [enabled, encryptionKey, fingerprint, mergeCount]);
 }

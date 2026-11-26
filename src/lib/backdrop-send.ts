@@ -102,6 +102,8 @@ export interface BackdropLinkEnv {
 export interface DependantSlotsView {
   id: string;
   displayName: string;
+  /** A phone is paired when `authorizedClientPubkey` is set (phone-paired and child-direct both write it): the publisher's own gate. */
+  bunkerEndpoint?: { authorizedClientPubkey?: string };
   naturalPerson: { publicKey: string; backdropHash?: string; backdropKey?: string; backdropBlossomUrl?: string };
   persona: { publicKey: string; backdropHash?: string; backdropKey?: string; backdropBlossomUrl?: string };
   extraPersonas?: ReadonlyArray<{ publicKey: string; backdropHash?: string; backdropKey?: string; backdropBlossomUrl?: string }>;
@@ -114,13 +116,17 @@ export interface DependantSlotsView {
  * same dependant's persona cards in child mode on the guardian's phone both
  * link. Persona is matched before the real-name slot, so a key shared by both
  * (an imported persona) is the persona. A card that is not a dependant slot
- * gets null, and so does everything on a paired-child install.
+ * gets null, as does a dependant with no phone paired yet and everything on a
+ * paired-child install.
  */
 export function buildDependantBackdropLookup(env: BackdropLinkEnv): (pubkey: string) => import('./backdrop-send-context').DependantBackdropLink | null {
   if (env.isPairedChild) return () => null;
   return (pubkey: string) => {
     if (!pubkey) return null;
     for (const dep of env.dependants) {
+      // No phone paired: the inventory goes to nobody, so there is nothing to
+      // send to and the backdrop stays device-local ("Only on this device").
+      if (!dep.bunkerEndpoint?.authorizedClientPubkey) continue;
       let target: string | null = null;
       let slot: { backdropHash?: string; backdropKey?: string; backdropBlossomUrl?: string } | undefined;
       if (dep.persona.publicKey === pubkey) { target = 'persona'; slot = dep.persona; }

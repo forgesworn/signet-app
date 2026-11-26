@@ -127,7 +127,7 @@ import { buildDependantBackdropLookup, type BackdropLinkEnv } from './backdrop-s
 describe('buildDependantBackdropLookup', () => {
   const NP = 'a'.repeat(64), PERSONA = 'b'.repeat(64), EXTRA = 'c'.repeat(64), OWN = 'd'.repeat(64);
   const dep = (over: Record<string, unknown> = {}) => ({
-    id: PERSONA, displayName: 'Lily',
+    id: PERSONA, displayName: 'Lily', bunkerEndpoint: { authorizedClientPubkey: 'f'.repeat(64) },
     naturalPerson: { publicKey: NP }, persona: { publicKey: PERSONA }, extraPersonas: [{ publicKey: EXTRA }], ...over,
   });
   function env(over: Partial<BackdropLinkEnv> = {}) {
@@ -161,6 +161,18 @@ describe('buildDependantBackdropLookup', () => {
     const sentSlot = { publicKey: PERSONA, backdropHash: H1, backdropKey: 'k'.repeat(64), backdropBlossomUrl: SERVER };
     expect(buildDependantBackdropLookup(env({ dependants: [dep({ persona: sentSlot })] }).e)(PERSONA)!.sent).toBe(true);
     expect(buildDependantBackdropLookup(env().e)(PERSONA)!.sent).toBe(false);
+  });
+
+  it('a dependant with no phone paired has no link: the backdrop stays on this device and nothing is uploaded', async () => {
+    const { e, upload } = env({ dependants: [dep({ bunkerEndpoint: undefined }), dep({ id: 'x', persona: { publicKey: 'e'.repeat(64) }, bunkerEndpoint: {} })] });
+    const lookup = buildDependantBackdropLookup(e);
+    expect(lookup(PERSONA)).toBeNull();
+    expect(lookup('e'.repeat(64))).toBeNull();
+    expect(upload).not.toHaveBeenCalled();
+  });
+
+  it('a child-direct dependant is paired too (the pairing writes authorizedClientPubkey)', () => {
+    expect(buildDependantBackdropLookup(env({ dependants: [dep()] }).e)(PERSONA)).not.toBeNull();
   });
 
   it('a paired-child install has no link anywhere, so nothing is ever uploaded', async () => {
