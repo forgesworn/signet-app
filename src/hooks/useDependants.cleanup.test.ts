@@ -44,6 +44,10 @@ async function setup(deleteBlob: (...c: Call) => Promise<DeleteOutcome>) {
   });
   await act(async () => {
     await hook.result.current.addDependantPersona(dep.id, 'Games', undefined, { deviceDerive: async () => ({ publicKey: EXTRA, privateKey: '' as const }) });
+    // A backdrop pointer is only ever saved for a dependant with a paired phone.
+    await hook.result.current.mutateDependantRecord(dep.id, KEY, d => d && ({
+      ...d, bunkerEndpoint: { publicKey: 'e'.repeat(64), privateKey: 'f'.repeat(64), createdAt: 1, authorizedClientPubkey: 'c'.repeat(64) },
+    }));
   });
   for (const [target, a, b] of [['persona', '4', '5'], [EXTRA, '6', '7'], ['natural-person', '8', '9']] as const) {
     await act(async () => {

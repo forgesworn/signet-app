@@ -959,9 +959,9 @@ function AppContent() {
     getKey: () => encryptionKeyRef.current,
     blossomUrl: preferences.defaultBlossomUrl ?? DEFAULT_BLOSSOM_URL,
     blossomConsent,
-    setSlot: (depId, target, meta, sentDigest) => setDependantPersonaBackdrop(depId, target, meta
+    setSlot: (depId, target, meta, sentDigest, stillCurrent) => setDependantPersonaBackdrop(depId, target, meta
       ? { hash: meta.hash, blossomUrl: meta.blossomUrl, keyHex: meta.keyHex, updatedAt: meta.updatedAt, sentDigest }
-      : null),
+      : null, { stillCurrent }),
     deleteBlob: (domain, hash, server) => deleteOwnBlob(domain, hash, server),
   // `deleteOwnBlob` reads the live key from a ref, so it is not a dependency.
   }), [isPairedChild, dependants, preferences.defaultBlossomUrl, blossomConsent, setDependantPersonaBackdrop]);

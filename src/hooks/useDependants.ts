@@ -640,6 +640,14 @@ export function useDependants(
     depPubkey: string,
     target: 'natural-person' | 'persona' | string,
     backdrop: { hash: string; blossomUrl: string; keyHex: string; updatedAt: number; sentDigest?: string } | null,
+    opts?: {
+      /**
+       * Asked INSIDE the write queue, once the record is read: false means a
+       * newer change (an unpair, a remove) outranked this save while it waited,
+       * so nothing is written.
+       */
+      stillCurrent?: () => boolean;
+    },
   ): Promise<{ previous?: { hash: string; server: string } }> => {
     if (!encryptionKey) throw new Error('Encryption key required');
     if (!guardianPubkey) throw new Error('No guardian identity');
@@ -650,6 +658,12 @@ export function useDependants(
       if (!slot) throw new Error('Persona not found');
       // Checked after the write queue's wait: a lock during it saves nothing.
       if (liveKeyRef.current !== encryptionKey) throw new Error('Encryption key required');
+      if (backdrop) {
+        // An unpair or a newer change ran while this save waited its turn: a
+        // pointer written now would outlive the phone it was sent for.
+        if (opts?.stillCurrent && !opts.stillCurrent()) throw new Error('Superseded');
+        if (!dep.bunkerEndpoint?.authorizedClientPubkey) throw new Error('No phone paired');
+      }
       previous = slot.backdropHash && slot.backdropBlossomUrl
         ? { hash: slot.backdropHash, server: slot.backdropBlossomUrl }
         : undefined;

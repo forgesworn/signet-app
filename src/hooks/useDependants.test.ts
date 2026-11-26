@@ -374,6 +374,10 @@ describe('useDependants.setDependantPersonaBackdrop', () => {
     });
     await act(async () => {
       await result.current.addDependantPersona(dep.id, 'Games', undefined, { deviceDerive: async () => ({ publicKey: EXTRA, privateKey: '' as const }) });
+      // A backdrop pointer is only ever saved for a dependant with a paired phone.
+      await result.current.mutateDependantRecord(dep.id, KEY, d => d && ({
+        ...d, bunkerEndpoint: { publicKey: 'e'.repeat(64), privateKey: 'f'.repeat(64), createdAt: 1, authorizedClientPubkey: 'c'.repeat(64) },
+      }));
     });
     return { g, result, dep };
   }
@@ -422,6 +426,32 @@ describe('useDependants.setDependantPersonaBackdrop', () => {
       await expect(result.current.setDependantPersonaBackdrop('f'.repeat(64), 'persona', bd('1'))).rejects.toThrow();
       await expect(result.current.setDependantPersonaBackdrop(dep.id, 'e'.repeat(64), bd('1'))).rejects.toThrow();
     });
+  });
+
+  it('refuses a save the sender says was outranked while it waited its turn, and saves nothing', async () => {
+    const { g, result, dep } = await setup();
+    await act(async () => {
+      await expect(result.current.setDependantPersonaBackdrop(dep.id, 'persona', bd('1'), { stillCurrent: () => false })).rejects.toThrow();
+      await expect(result.current.setDependantPersonaBackdrop(dep.id, 'persona', bd('1'), { stillCurrent: () => true })).resolves.toBeDefined();
+    });
+    const stored = (await getDependants(g.naturalPerson.publicKey, KEY))[0];
+    expect(stored.persona.backdropHash).toBe('1'.repeat(64));
+  });
+
+  it('refuses a pointer once the dependant has no paired phone, but still clears one', async () => {
+    const { g, result, dep } = await setup();
+    await act(async () => { await result.current.setDependantPersonaBackdrop(dep.id, 'persona', bd('1')); });
+    await act(async () => {
+      await result.current.mutateDependantRecord(dep.id, KEY, d => d && ({ ...d, bunkerEndpoint: undefined }));
+    });
+    await act(async () => {
+      await expect(result.current.setDependantPersonaBackdrop(dep.id, 'persona', bd('2'))).rejects.toThrow('No phone paired');
+    });
+    let stored = (await getDependants(g.naturalPerson.publicKey, KEY))[0];
+    expect(stored.persona.backdropHash).toBe('1'.repeat(64));
+    await act(async () => { await result.current.setDependantPersonaBackdrop(dep.id, 'persona', null); });
+    stored = (await getDependants(g.naturalPerson.publicKey, KEY))[0];
+    expect(stored.persona.backdropHash).toBeUndefined();
   });
 
   it('refuses when there is no guardian pubkey', async () => {

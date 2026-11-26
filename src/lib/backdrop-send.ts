@@ -45,8 +45,11 @@ export interface BackdropSendDeps {
    * before it resolves: the delete that follows reads the stored rows (R1).
    * `sentDigest` is the sha256 of the local picture this pointer carries,
    * stored beside it so the card can tell whether the current picture was sent.
+   * `stillCurrent` (sends only) is for the writer to ask inside its own write
+   * queue: false means an unpair or a newer change outranked this send while it
+   * waited, and nothing may be saved.
    */
-  saveSlot: (meta: BackdropMetadata | null, sentDigest?: string) => Promise<{ previous?: { hash: string; server: string } }>;
+  saveSlot: (meta: BackdropMetadata | null, sentDigest?: string, stillCurrent?: () => boolean) => Promise<{ previous?: { hash: string; server: string } }>;
   deleteBlob: (domain: string, hash: string, server: string) => Promise<DeleteOutcome>;
   /** Test seam: remember an upload that could not be deleted (defaults to the `blob-orphan:` rows). */
   recordOrphan?: (entry: { domain: string; hash: string; url: string }) => Promise<void>;
@@ -165,13 +168,15 @@ async function uploadAndSave(
       return { ok: false, reason: BACKDROP_COPY.reasons.locked };
     }
     try {
-      const { previous } = await deps.saveSlot(meta, digest);
+      const { previous } = await deps.saveSlot(meta, digest, () => backdropSlots.current(deps.slotKey) === generation);
       return { ok: true, previous };
     } catch {
-      // A lock during the save's own wait makes it refuse: that is a lock too.
+      // A lock during the save's own wait makes it refuse: that is a lock too,
+      // and so is an unpair or newer change that ran in that wait.
       const locked = !live();
+      const superseded = backdropSlots.current(deps.slotKey) !== generation;
       discard();
-      return { ok: false, reason: locked ? BACKDROP_COPY.reasons.locked : BACKDROP_COPY.reasons.failed };
+      return { ok: false, reason: locked ? BACKDROP_COPY.reasons.locked : superseded ? BACKDROP_COPY.reasons.superseded : BACKDROP_COPY.reasons.failed };
     }
   });
   if (!saved.ok) return saved;
@@ -206,7 +211,7 @@ export interface BackdropLinkEnv {
   getKey: () => string | null;
   blossomUrl: string | undefined;
   blossomConsent: boolean;
-  setSlot: (depId: string, target: string, meta: BackdropMetadata | null, sentDigest?: string) => Promise<{ previous?: { hash: string; server: string } }>;
+  setSlot: (depId: string, target: string, meta: BackdropMetadata | null, sentDigest?: string, stillCurrent?: () => boolean) => Promise<{ previous?: { hash: string; server: string } }>;
   deleteBlob: BackdropSendDeps['deleteBlob'];
   upload?: BackdropSendDeps['upload'];
 }
@@ -270,7 +275,9 @@ export function buildDependantBackdropLookup(env: BackdropLinkEnv): (pubkey: str
         blossomUrl: env.blossomUrl,
         blossomConsent: env.blossomConsent,
         upload: env.upload,
-        saveSlot: (meta, sentDigest) => env.setSlot(dep.id, t, meta, sentDigest),
+        saveSlot: (meta, sentDigest, stillCurrent) => (stillCurrent
+          ? env.setSlot(dep.id, t, meta, sentDigest, stillCurrent)
+          : env.setSlot(dep.id, t, meta, sentDigest)),
         deleteBlob: env.deleteBlob,
       });
       return {
