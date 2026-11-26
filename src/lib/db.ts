@@ -2001,6 +2001,37 @@ export async function listBackdropRowPubkeys(): Promise<{ own: string[]; guardia
   return { own: await keys('backdrop:'), guardian: await keys('backdrop-guardian:') };
 }
 
+// --- Orphaned Blossom blobs ---
+//
+// A blob this install uploaded that nothing stored points at, which could not
+// be deleted when it was orphaned (the app locked mid-upload: deleting needs
+// the unlock key, which seals the uploader secret). One plaintext row per blob,
+// `blob-orphan:<hash>`, beside the backdrop rows in `preferences`: writable
+// with no key, wiped by `clear('preferences')` in `purgeAllUserData`. Holds
+// only the hash, server and uploader domain, never a key. The sweep and the
+// validation live in `blob-deletion.ts`.
+
+const BLOB_ORPHAN_PREFIX = 'blob-orphan:';
+
+/** Put one orphan row, keyed by its hash. `entry` is validated by the caller. */
+export async function putBlobOrphanRow(entry: { domain: string; hash: string; url: string; addedAt: number; attempts: number }): Promise<void> {
+  const db = await getDB();
+  await db.put('preferences', { id: BLOB_ORPHAN_PREFIX + entry.hash, ...entry });
+}
+
+/** Every orphan row as stored (unvalidated), by key-range scan. */
+export async function listBlobOrphanRows(): Promise<unknown[]> {
+  const db = await getDB();
+  return db.getAll('preferences', IDBKeyRange.bound(BLOB_ORPHAN_PREFIX, `${BLOB_ORPHAN_PREFIX}\uffff`));
+}
+
+/** Delete one orphan row by its stored id (`blob-orphan:<hash>`); other ids are ignored. */
+export async function deleteBlobOrphanRow(id: string): Promise<void> {
+  if (!id.startsWith(BLOB_ORPHAN_PREFIX)) return;
+  const db = await getDB();
+  await db.delete('preferences', id);
+}
+
 // --- Origin Policies (per-origin identity-selection memory) ---
 
 /** Normalise an origin to the form used as the keyPath — no path, no trailing slash. */

@@ -19,10 +19,11 @@
  */
 
 import {
-  hmacUploaderBackend, AVATAR_UPLOADER_DOMAIN, BACKDROP_UPLOADER_DOMAIN, CONTACT_AVATAR_UPLOADER_DOMAIN, type UploaderBackend,
+  hmacUploaderBackend, AVATAR_UPLOADER_DOMAIN, BACKDROP_UPLOADER_DOMAIN, CONTACT_AVATAR_UPLOADER_DOMAIN,
+  CONTACT_PICTURE_UPLOADER_DOMAIN, VENUE_PHOTO_UPLOADER_DOMAIN, PUBLIC_PICTURE_UPLOADER_DOMAIN, type UploaderBackend,
 } from './blossom-uploader';
 import { deleteFromBlossom, BlossomDeleteError } from './blossom';
-import { listIdentityStoreRows } from './db';
+import { listIdentityStoreRows, putBlobOrphanRow, listBlobOrphanRows, deleteBlobOrphanRow } from './db';
 import {
   OLD_PHOTO_DELETED_COPY, OLD_PHOTO_NOT_DELETED_COPY, OLD_PICTURE_DELETED_COPY, OLD_PICTURE_NOT_DELETED_COPY,
   withBlobHost,
@@ -246,4 +247,155 @@ export async function deleteReplacedBackdrop(
 ): Promise<DeleteOutcome | undefined> {
   if (!old || old.hash === newHash?.toLowerCase()) return undefined;
   return del(BACKDROP_UPLOADER_DOMAIN, old.hash, old.server);
+}
+
+// --- Orphaned uploads (gap 5) ---
+//
+// An upload that nothing will point at (superseded, refused, or the app locked
+// before its pointer was saved) is deleted at once when this install can sign
+// the delete. When it cannot (locked: the uploader secret is sealed under the
+// unlock key) or the server could not be reached, the blob is recorded as an
+// orphan instead, and the next unlock's sweep deletes it. Uploads are never
+// registered with the publish flush (`lock-after-flush`): the lock does not
+// wait for them.
+
+/** At most this many orphan rows; recording one more drops the oldest. */
+export const BLOB_ORPHAN_CAP = 50;
+/** A delete that fails this many times (refused, unreachable) is given up. */
+export const BLOB_ORPHAN_MAX_ATTEMPTS = 5;
+
+const ORPHAN_ID_PREFIX = 'blob-orphan:';
+const UPLOADER_DOMAINS: ReadonlySet<string> = new Set([
+  AVATAR_UPLOADER_DOMAIN, BACKDROP_UPLOADER_DOMAIN, CONTACT_AVATAR_UPLOADER_DOMAIN,
+  CONTACT_PICTURE_UPLOADER_DOMAIN, VENUE_PHOTO_UPLOADER_DOMAIN, PUBLIC_PICTURE_UPLOADER_DOMAIN,
+]);
+
+export interface OrphanBlob {
+  /** The uploader domain the blob was uploaded under. */
+  domain: string;
+  /** sha256 hex, lowercase. */
+  hash: string;
+  /** Base URL of the Blossom server holding it (https). */
+  url: string;
+  addedAt: number;
+  attempts: number;
+}
+
+function isHttpsUrl(v: unknown): v is string {
+  if (typeof v !== 'string' || v.length > 2048) return false;
+  try { return new URL(v).protocol === 'https:'; } catch { return false; }
+}
+
+/** A stored orphan row, or null when it is junk (any field malformed, or an id that does not match its hash). */
+export function parseOrphanBlob(raw: unknown): OrphanBlob | null {
+  if (!isRecord(raw)) return null;
+  const { id, domain, hash, url, addedAt, attempts } = raw;
+  if (typeof domain !== 'string' || !UPLOADER_DOMAINS.has(domain)) return null;
+  if (typeof hash !== 'string' || !HEX64.test(hash)) return null;
+  if (id !== undefined && id !== ORPHAN_ID_PREFIX + hash) return null;
+  if (!isHttpsUrl(url)) return null;
+  if (typeof addedAt !== 'number' || !Number.isFinite(addedAt) || addedAt < 0) return null;
+  if (typeof attempts !== 'number' || !Number.isInteger(attempts) || attempts < 0 || attempts >= BLOB_ORPHAN_MAX_ATTEMPTS) return null;
+  return { domain, hash, url, addedAt, attempts };
+}
+
+function rowId(raw: unknown): string | null {
+  return isRecord(raw) && typeof raw.id === 'string' ? raw.id : null;
+}
+
+/**
+ * Remember an uploaded blob nothing points at, for the next unlock's sweep.
+ * Needs no key (it runs at lock time). Never throws. Recording a hash already
+ * recorded keeps the earlier row and its attempt count. Over the cap, the
+ * oldest rows (and any junk) are dropped.
+ */
+export async function recordOrphanBlob(
+  entry: { domain: string; hash: string; url: string },
+  now: number = Date.now(),
+): Promise<void> {
+  try {
+    const parsed = parseOrphanBlob({ ...entry, hash: entry.hash.toLowerCase(), addedAt: now, attempts: 0 });
+    if (!parsed) return;
+    const rows = await listBlobOrphanRows();
+    if (!rows.some(r => rowId(r) === ORPHAN_ID_PREFIX + parsed.hash && parseOrphanBlob(r))) {
+      await putBlobOrphanRow(parsed);
+      rows.push({ id: ORPHAN_ID_PREFIX + parsed.hash, ...parsed });
+    }
+    const valid: Array<{ id: string; addedAt: number }> = [];
+    for (const r of rows) {
+      const id = rowId(r);
+      if (!id) continue;
+      const o = parseOrphanBlob(r);
+      if (!o) { await deleteBlobOrphanRow(id); continue; }
+      if (!valid.some(v => v.id === id)) valid.push({ id, addedAt: o.addedAt });
+    }
+    valid.sort((a, b) => a.addedAt - b.addedAt);
+    for (const v of valid.slice(0, Math.max(0, valid.length - BLOB_ORPHAN_CAP))) await deleteBlobOrphanRow(v.id);
+  } catch {
+    // Best effort: an orphan that cannot be recorded stays on the server, as before.
+  }
+}
+
+/**
+ * Throw away a blob just uploaded that nothing will point at. Deleted now when
+ * the key is still live; otherwise (locked, or the server could not be reached)
+ * recorded for the sweep. Never throws.
+ */
+export async function discardUpload(args: {
+  domain: string;
+  hash: string;
+  server: string;
+  /** Whether the unlock key the upload started under is still the live one. */
+  live: boolean;
+  deleteBlob: BlobDeleter;
+  recordOrphan?: (entry: { domain: string; hash: string; url: string }) => Promise<void>;
+}): Promise<void> {
+  const record = args.recordOrphan ?? recordOrphanBlob;
+  const entry = { domain: args.domain, hash: args.hash, url: args.server };
+  try {
+    if (!args.live) { await record(entry); return; }
+    if (await args.deleteBlob(args.domain, args.hash, args.server) === 'failed') await record(entry);
+  } catch { /* never throws */ }
+}
+
+export interface SweepResult { deleted: number; dropped: number; retried: number; stopped: boolean }
+
+/**
+ * Delete every recorded orphan this install can (once per unlock). For each
+ * entry: still referenced by a stored row (R1) → keep the blob, drop the entry;
+ * deleted (2xx or 404) → drop; failed → count an attempt, drop after
+ * `BLOB_ORPHAN_MAX_ATTEMPTS`. `deleter` must be bound to the sweep's own key,
+ * and the pass stops, leaving every remaining entry as it is, as soon as that
+ * key is no longer live (or the deleter answers `kept` for a blob nothing
+ * references, which means it could not act). Junk rows are dropped. Never throws.
+ */
+export async function sweepOrphanBlobs(args: {
+  deleter: BlobDeleter;
+  isLive: () => boolean;
+  loadRows?: () => Promise<readonly unknown[]>;
+}): Promise<SweepResult> {
+  const out: SweepResult = { deleted: 0, dropped: 0, retried: 0, stopped: false };
+  try {
+    const stored = await listBlobOrphanRows();
+    for (const raw of stored) {
+      if (!args.isLive()) { out.stopped = true; break; }
+      const id = rowId(raw);
+      if (!id) continue;
+      const entry = parseOrphanBlob(raw);
+      if (!entry) { await deleteBlobOrphanRow(id); out.dropped++; continue; }
+      let referenced: boolean;
+      try {
+        referenced = isBlobReferenced(entry.hash, await (args.loadRows ?? listIdentityStoreRows)());
+      } catch { out.stopped = true; break; }
+      if (referenced) { await deleteBlobOrphanRow(id); out.dropped++; continue; }
+      const outcome = await args.deleter(entry.domain, entry.hash, entry.url);
+      if (!args.isLive()) { out.stopped = true; break; }
+      if (outcome === 'deleted') { await deleteBlobOrphanRow(id); out.deleted++; continue; }
+      if (outcome === 'kept') { out.stopped = true; break; }
+      const attempts = entry.attempts + 1;
+      if (attempts >= BLOB_ORPHAN_MAX_ATTEMPTS) { await deleteBlobOrphanRow(id); out.dropped++; }
+      else { await putBlobOrphanRow({ ...entry, attempts }); out.retried++; }
+    }
+  } catch { out.stopped = true; }
+  return out;
 }

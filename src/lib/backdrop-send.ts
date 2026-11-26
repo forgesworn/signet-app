@@ -12,7 +12,8 @@
 
 import { BlossomUploadError } from './blossom';
 import { BACKDROP_UPLOADER_DOMAIN } from './blossom-uploader';
-import { deleteReplacedBackdrop, type DeleteOutcome } from './blob-deletion';
+import { deleteReplacedBackdrop, discardUpload, type DeleteOutcome } from './blob-deletion';
+import { createSlotSequencer } from './slot-sequencer';
 import { uploadBackdrop, type BackdropMetadata } from './backdrop-blob';
 import { BACKDROP_COPY } from './child-device-copy';
 import type { BackdropSendResult } from './backdrop-send-context';
@@ -47,28 +48,15 @@ export interface BackdropSendDeps {
    */
   saveSlot: (meta: BackdropMetadata | null, sentDigest?: string) => Promise<{ previous?: { hash: string; server: string } }>;
   deleteBlob: (domain: string, hash: string, server: string) => Promise<DeleteOutcome>;
+  /** Test seam: remember an upload that could not be deleted (defaults to the `blob-orphan:` rows). */
+  recordOrphan?: (entry: { domain: string; hash: string; url: string }) => Promise<void>;
 }
 
 // Per-slot "newest change" counters and save queues. Module-level because the
 // lookup (and so its closures) is rebuilt whenever the dependants state changes,
-// while an upload started before that is still in flight.
-const generations = new Map<string, number>();
-const queues = new Map<string, Promise<unknown>>();
-
-function bump(slotKey: string): number {
-  const next = (generations.get(slotKey) ?? 0) + 1;
-  generations.set(slotKey, next);
-  return next;
-}
-
-/** Run `task` after every earlier task on this slot has settled. */
-function serial<T>(slotKey: string, task: () => Promise<T>): Promise<T> {
-  const run = (queues.get(slotKey) ?? Promise.resolve()).then(task, task);
-  const tail = run.catch(() => undefined);
-  queues.set(slotKey, tail);
-  void tail.then(() => { if (queues.get(slotKey) === tail) queues.delete(slotKey); });
-  return run;
-}
+// while an upload started before that is still in flight. Backdrops only: the
+// avatar flow has its own sequencer.
+const backdropSlots = createSlotSequencer();
 
 /** The reason to show for a thrown upload error: the messages the upload path writes are already plain English. */
 function reasonFor(err: unknown): string {
@@ -92,7 +80,7 @@ export async function sendBackdropToChild(
 
   // A newer send or a remove on this slot, started after this point, outranks
   // this one: it will find the counter moved on and discard what it uploaded.
-  const generation = bump(deps.slotKey);
+  const generation = backdropSlots.bump(deps.slotKey);
 
   let meta: BackdropMetadata;
   let digest: string;
@@ -103,19 +91,29 @@ export async function sendBackdropToChild(
     return { ok: false, reason: reasonFor(err) };
   }
 
+  const startKey = deps.encryptionKey;
+  const live = () => {
+    const liveKey = deps.getKey ? deps.getKey() : startKey;
+    return liveKey !== null && liveKey === startKey;
+  };
   // The new blob is an orphan nothing references until the pointer lands.
-  const discard = () => { void deps.deleteBlob(BACKDROP_UPLOADER_DOMAIN, meta.hash, meta.blossomUrl).catch(() => undefined); };
+  // Deleted now while the key is live; otherwise (locked: deleting needs the
+  // unlock key, which seals the uploader secret) recorded for the next unlock's
+  // sweep (`blob-orphan:` rows).
+  const discard = () => {
+    void discardUpload({
+      domain: BACKDROP_UPLOADER_DOMAIN, hash: meta.hash, server: meta.blossomUrl,
+      live: live(), deleteBlob: deps.deleteBlob, recordOrphan: deps.recordOrphan,
+    });
+  };
 
-  const saved = await serial(deps.slotKey, async (): Promise<{ ok: true; previous?: { hash: string; server: string } } | { ok: false; reason: string }> => {
-    if (generations.get(deps.slotKey) !== generation) {
+  const saved = await backdropSlots.serial(deps.slotKey, async (): Promise<{ ok: true; previous?: { hash: string; server: string } } | { ok: false; reason: string }> => {
+    if (backdropSlots.current(deps.slotKey) !== generation) {
       discard();
       return { ok: false, reason: BACKDROP_COPY.reasons.superseded };
     }
-    const liveKey = deps.getKey ? deps.getKey() : deps.encryptionKey;
-    if (liveKey === null || liveKey !== deps.encryptionKey) {
-      // Locked mid-upload. Deleting needs the unlock key (the uploader secret is
-      // sealed under it), so while locked this attempt is a silent no-op and the
-      // blob stays on the server as an unreferenced, encrypted orphan.
+    if (!live()) {
+      // Locked (or re-unlocked under another key) mid-upload: save nothing.
       discard();
       return { ok: false, reason: BACKDROP_COPY.reasons.locked };
     }
@@ -123,8 +121,10 @@ export async function sendBackdropToChild(
       const { previous } = await deps.saveSlot(meta, digest);
       return { ok: true, previous };
     } catch {
+      // A lock during the save's own wait makes it refuse: that is a lock too.
+      const locked = !live();
       discard();
-      return { ok: false, reason: BACKDROP_COPY.reasons.failed };
+      return { ok: false, reason: locked ? BACKDROP_COPY.reasons.locked : BACKDROP_COPY.reasons.failed };
     }
   });
   if (!saved.ok) return saved;
@@ -138,8 +138,8 @@ export async function sendBackdropToChild(
 export async function removeBackdropFromChild(deps: Pick<BackdropSendDeps, 'slotKey' | 'saveSlot' | 'deleteBlob'>): Promise<void> {
   // Bumped before anything is awaited: an upload still in flight is now stale
   // and will discard itself, so a remove during a send wins.
-  bump(deps.slotKey);
-  const previous = await serial(deps.slotKey, async () => {
+  backdropSlots.bump(deps.slotKey);
+  const previous = await backdropSlots.serial(deps.slotKey, async () => {
     try {
       return (await deps.saveSlot(null)).previous;
     } catch {

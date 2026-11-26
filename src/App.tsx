@@ -84,7 +84,7 @@ import { useState, useCallback, useEffect, useRef, useMemo } from 'react';
 import type { Page, CarouselRow, SignetIdentity, KnownPlace } from './types';
 import { resolveAuthSelectionIdentity, findRowForGuardianKeypair, findRowForDependant, resolveDependantCardSlot } from './lib/carousel-utils';
 import { resolveSelectedPubkey } from './lib/auth-selection';
-import { deleteOwnedBlob, deleteReplacedAvatar, deleteStoppedShareCopy, findSlotBlobs, type DeleteOutcome } from './lib/blob-deletion';
+import { deleteOwnedBlob, deleteReplacedAvatar, deleteStoppedShareCopy, findSlotBlobs, sweepOrphanBlobs, type DeleteOutcome } from './lib/blob-deletion';
 import { PUBLIC_PICTURE_UPLOADER_DOMAIN, VENUE_PHOTO_UPLOADER_DOMAIN } from './lib/blossom-uploader';
 import { downscaleAvatar, uploadAvatar, uploadPublicPicture, fetchAvatar, uploadContactAvatar, AVATAR_MAX_EDGE_PX, PUBLIC_PICTURE_MAX_EDGE_PX, PUBLIC_BANNER_MAX_EDGE_PX } from './lib/avatar';
 import { generateContactAvatarKey } from './lib/photo-crypto';
@@ -1088,6 +1088,21 @@ function AppContent() {
   // PWA update refs (avoid stale closures in effects)
   const encryptionKeyRef = useRef(encryptionKey);
   encryptionKeyRef.current = encryptionKey;
+  // Gap 5: once per unlock, delete the uploads a lock (or an unreachable server)
+  // left on Blossom with nothing pointing at them (`blob-orphan:` rows). Bound
+  // to this unlock's key; the sweep stops as soon as that key is no longer
+  // live. A paired-child install never uploads, so it has nothing to sweep.
+  const orphanSweepDoneRef = useRef(false);
+  useEffect(() => {
+    if (!encryptionKey) { orphanSweepDoneRef.current = false; return; }
+    if (isPairedChild || orphanSweepDoneRef.current) return;
+    orphanSweepDoneRef.current = true;
+    const key = encryptionKey;
+    void sweepOrphanBlobs({
+      deleter: (domain, hash, server) => deleteOwnedBlob({ hash, server, domain, encryptionKey: key }),
+      isLive: () => encryptionKeyRef.current === key,
+    });
+  }, [encryptionKey, isPairedChild]);
   // Owner-only recovery operations recheck identity/unlock after each await.
   async function authenticateWrappedBackup() {
     const ownerId = identityRef.current?.id;

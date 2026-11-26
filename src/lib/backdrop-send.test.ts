@@ -114,11 +114,29 @@ describe('an upload that spans a lock', () => {
     expect(d.saveSlot).not.toHaveBeenCalled();
   });
 
-  it('tries to delete the uploaded blob (a no-op while locked, since the uploader secret needs the key)', async () => {
+  it('records the uploaded blob as an orphan for the next unlock (deleting needs the key), and sends no delete', async () => {
     let key: string | null = 'unlock-key';
-    const { d } = deps({ getKey: () => key, upload: vi.fn(async () => { key = null; return META; }) });
+    const recordOrphan = vi.fn(async () => undefined);
+    const { d } = deps({ getKey: () => key, recordOrphan, upload: vi.fn(async () => { key = null; return META; }) });
     await sendBackdropToChild(blob, d);
-    expect(d.deleteBlob).toHaveBeenCalledWith(BACKDROP_UPLOADER_DOMAIN, H2, SERVER);
+    await vi.waitFor(() => expect(recordOrphan).toHaveBeenCalledWith({ domain: BACKDROP_UPLOADER_DOMAIN, hash: H2, url: SERVER }));
+    expect(d.deleteBlob).not.toHaveBeenCalled();
+  });
+
+  it('a lock during the save itself (the save refuses) is a lock too: orphan recorded, nothing deleted', async () => {
+    let key: string | null = 'unlock-key';
+    const recordOrphan = vi.fn(async () => undefined);
+    const { d } = deps({ getKey: () => key, recordOrphan, saveSlot: vi.fn(async () => { key = null; throw new Error('Encryption key required'); }) });
+    expect(await sendBackdropToChild(blob, d)).toEqual({ ok: false, reason: BACKDROP_COPY.reasons.locked });
+    await vi.waitFor(() => expect(recordOrphan).toHaveBeenCalledTimes(1));
+    expect(d.deleteBlob).not.toHaveBeenCalled();
+  });
+
+  it('an orphan whose delete fails while unlocked is recorded for a retry', async () => {
+    const recordOrphan = vi.fn(async () => undefined);
+    const { d } = deps({ recordOrphan, deleteBlob: vi.fn(async () => 'failed' as const), saveSlot: vi.fn(async () => { throw new Error('idb'); }) });
+    await sendBackdropToChild(blob, d);
+    await vi.waitFor(() => expect(recordOrphan).toHaveBeenCalledWith({ domain: BACKDROP_UPLOADER_DOMAIN, hash: H2, url: SERVER }));
   });
 
   it('a different key after the upload counts as a lock too', async () => {
