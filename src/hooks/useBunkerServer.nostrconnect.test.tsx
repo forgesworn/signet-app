@@ -1508,4 +1508,18 @@ describe('db.updateConnectedClient', () => {
     await db.updateConnectedClient('f'.repeat(64), { askToSign: true });
     expect(await getConnectedClient('f'.repeat(64))).toBeUndefined();
   });
+
+  it('records activity and a first persona binding only while the approval exists', async () => {
+    const clientPubkey = getPublicKey(generateSecretKey());
+    const firstPersona = getPublicKey(generateSecretKey());
+    const secondPersona = getPublicKey(generateSecretKey());
+    const client = { clientPubkey, appName: 'A', connectedAt: 1, lastSeenAt: 2, allowAlways: true, askToSign: true, permissions: ['sign_event:1'] };
+    await saveConnectedClient(client);
+    await db.updateConnectedClient(clientPubkey, { bindTo: firstPersona, lastSeenAt: 4 });
+    await db.updateConnectedClient(clientPubkey, { bindTo: secondPersona, lastSeenAt: 3 });
+    expect(await getConnectedClient(clientPubkey)).toEqual({ ...client, boundPubkey: firstPersona, lastSeenAt: 4 });
+    await deleteConnectedClient(clientPubkey);
+    await expect(db.updateConnectedClient(clientPubkey, { bindTo: firstPersona, lastSeenAt: 5 })).resolves.toBeUndefined();
+    expect(await getConnectedClient(clientPubkey)).toBeUndefined();
+  });
 });
