@@ -358,6 +358,63 @@ export async function discardUpload(args: {
   } catch { /* never throws */ }
 }
 
+/** One blob this install uploaded, to be deleted when its slot goes. */
+export interface SlotBlobToDelete { domain: string; hash: string; server: string }
+
+/**
+ * The private-avatar and guardian-backdrop blobs on a dependant's (or
+ * identity's) slots: every slot (real-name, persona, extras), or only
+ * `targets`. Never the #242 share copy (only Stop sharing deletes that). One
+ * entry per hash, since two slots may point at the same bytes. Read it BEFORE
+ * the change that clears them.
+ */
+export function collectSlotBlobsToDelete(
+  holder: { naturalPerson?: unknown; persona?: unknown; extraPersonas?: readonly unknown[] } | null | undefined,
+  kinds: ReadonlyArray<'avatar' | 'backdrop'>,
+  targets?: readonly string[],
+): SlotBlobToDelete[] {
+  if (!holder) return [];
+  const all = ['natural-person', 'persona',
+    ...(holder.extraPersonas ?? []).flatMap(p => (isRecord(p) && typeof p.publicKey === 'string' ? [p.publicKey] : []))];
+  const out: SlotBlobToDelete[] = [];
+  const seen = new Set<string>();
+  for (const target of targets ?? all) {
+    const blobs = findSlotBlobs(holder, target);
+    for (const kind of kinds) {
+      const b = blobs[kind];
+      if (!b || seen.has(`${kind}:${b.hash}`)) continue;
+      seen.add(`${kind}:${b.hash}`);
+      out.push({ domain: kind === 'avatar' ? AVATAR_UPLOADER_DOMAIN : BACKDROP_UPLOADER_DOMAIN, hash: b.hash, server: b.server });
+    }
+  }
+  return out;
+}
+
+/**
+ * Delete blobs whose slot is already gone (removal, unpair), after the record
+ * stopped pointing at them. Best effort, never throws, never blocks the
+ * removal. Each goes through the App deleter (R1: a blob some other stored row
+ * still references is kept). A blob that cannot be deleted because the app is
+ * locked (checked again after each attempt, since the lock can land mid-run),
+ * or whose server could not be reached, is recorded as an orphan for the next
+ * unlock's sweep.
+ */
+export async function deleteRemovedBlobs(blobs: readonly SlotBlobToDelete[], args: {
+  deleteBlob: BlobDeleter;
+  isLive: () => boolean;
+  recordOrphan?: (entry: { domain: string; hash: string; url: string }) => Promise<void>;
+}): Promise<void> {
+  const record = args.recordOrphan ?? recordOrphanBlob;
+  for (const b of blobs) {
+    const entry = { domain: b.domain, hash: b.hash, url: b.server };
+    try {
+      if (!args.isLive()) { await record(entry); continue; }
+      const outcome = await args.deleteBlob(b.domain, b.hash, b.server);
+      if (outcome === 'failed' || (outcome === 'kept' && !args.isLive())) await record(entry);
+    } catch { /* never throws */ }
+  }
+}
+
 export interface SweepResult { deleted: number; dropped: number; retried: number; stopped: boolean }
 
 /**

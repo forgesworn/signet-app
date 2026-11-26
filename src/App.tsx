@@ -932,8 +932,10 @@ function AppContent() {
   // Always use NP pubkey for dependant lookup — dependants are stored with guardianPubkey
   // as the NP key, so switching to persona must not lose sight of them.
   const guardianNpPubkey = identity?.naturalPerson.publicKey;
-  const { dependants, loading: dependantsLoading, loadedWithKey: dependantsLoadedWithKey, addDependant, importDependant, removeDependant: removeDependantRecord, updateAutonomyStage, updateAuditVisibility, updatePetitionOnDeny, updateDependantName, updateDependantPhoto, switchDependantPrimary, updateDependantPersonaName, activateDependantNaturalPerson, addDependantPersona, updatePersonaVisibility, removeDependantExtraPersona, reorderDependants, ensureDependantBunkerEndpoint, clearDependantBunkerEndpoint, saveDependantPairingSecret, bindDependantBunkerClient, setDependantPersonaAvatar, clearDependantPersonaAvatar, setDependantPersonaContactAvatar, clearDependantPersonaContactAvatar, setDependantPersonaBackdrop, setDependantPersonaPublicProfile, clearDependantPersonaPublicProfile, setDependantSlotNip05Check, setDepExtraPersonaHidden, reload: reloadDependants, loadFreshDependants, mutateDependantRecord } = useDependants(
+  const { dependants, loading: dependantsLoading, loadedWithKey: dependantsLoadedWithKey, addDependant, importDependant, removeDependant: removeDependantRecord, updateAutonomyStage, updateAuditVisibility, updatePetitionOnDeny, updateDependantName, updateDependantPhoto, switchDependantPrimary, updateDependantPersonaName, activateDependantNaturalPerson, addDependantPersona, updatePersonaVisibility, removeDependantExtraPersona, reorderDependants, ensureDependantBunkerEndpoint, clearDependantBunkerEndpoint, saveDependantPairingSecret, bindDependantBunkerClient, setDependantPersonaAvatar, clearDependantPersonaAvatar, setDependantPersonaContactAvatar, clearDependantPersonaContactAvatar, setDependantPersonaBackdrop, setDependantPersonaPublicProfile, clearDependantPersonaPublicProfile, setDependantSlotNip05Check, setDepExtraPersonaHidden, reload: reloadDependants, loadFreshDependants, mutateDependantRecord, clearDependantBackdrops } = useDependants(
     guardianNpPubkey, identity?.id, encryptionKey,
+    // `deleteOwnBlob` is declared just below; it only runs when a removal or an unpair fires.
+    { deleteBlob: (domain, hash, server) => deleteOwnBlob(domain, hash, server) },
   );
 
   // Blossom blob deletion (design 2026-10-07 §2). Signs with the HMAC uploader
@@ -1024,11 +1026,11 @@ function AppContent() {
   // Every removal of a dependant on this device ends it as a scope for the
   // session (a sync may merge the record back; it must not become "Managing"
   // them again). The hook's own remover is not called anywhere else.
-  const removeDependant = useCallback(async (dependantId: string) => {
+  const removeDependant = useCallback(async (dependantId: string, opts?: { keepBlobs?: boolean }) => {
     // finally: the record is deleted before the hook's follow-up steps, so a
     // throw from one of those must still end the scope.
     try {
-      await removeDependantRecord(dependantId);
+      await removeDependantRecord(dependantId, opts);
     } finally {
       endDependantScope(dependantId);
     }
@@ -15381,7 +15383,9 @@ function AppContent() {
               const synced = await syncPrivateVaultDataset({ ...profiles, ownerPubkey: guardian, encryptionKey: key,
                 relays: syncRelays, isCurrent: current(key), now: Math.floor(Date.now() / 1000) });
               if (synced.state !== 'verified') throw new Error('Their new backup is verified and this device has stopped managing their old identity. The family handover backup is still pending. Unlock and retry to finish syncing it.');
-              await removeDependant(dep.id);
+              // The handed-over child's own install still points at the avatars
+              // this phone uploaded for it: keep every blob.
+              await removeDependant(dep.id, { keepBlobs: true });
               bumpContactsV2();
             };
             // A crash/offline failure after local cutover resumes the durable
@@ -15482,7 +15486,8 @@ function AppContent() {
               // are gone with the record. Best-effort, fire-and-forget
               // semantics inside retractDepProfilesBeforePurge.
               await retractDepProfilesBeforePurge(dep);
-              await removeDependant(depId);
+              // Same as the independence handover: the dependant's own install keeps its pictures.
+              await removeDependant(depId, { keepBlobs: true });
             } catch {
               // Surface via the ceremony's error state — the onComplete
               // caller in TransitionCeremony catches and displays.
@@ -15523,7 +15528,12 @@ function AppContent() {
       if (!key) return null;
       return (await loadFreshDependants(key)).find(d => d.id === id) ?? null;
     },
-    clearChildDevice: async (id) => { await clearChildDevice(id); await reloadDependants(); },
+    clearChildDevice: async (id) => {
+      await clearChildDevice(id);
+      // The phone is unpaired: stop sending it card backdrops and delete what it held. Best effort.
+      await clearDependantBackdrops(id).catch(() => undefined);
+      await reloadDependants();
+    },
     onOpenOperatorImport: () => navigateTo('settings-advanced'),
   } : undefined);
 

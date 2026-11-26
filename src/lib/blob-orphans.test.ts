@@ -3,7 +3,7 @@
 import { describe, it, expect, beforeEach, vi } from 'vitest';
 import { openDB } from 'idb';
 import {
-  recordOrphanBlob, sweepOrphanBlobs, parseOrphanBlob, discardUpload, BLOB_ORPHAN_CAP, BLOB_ORPHAN_MAX_ATTEMPTS,
+  recordOrphanBlob, sweepOrphanBlobs, parseOrphanBlob, discardUpload, deleteRemovedBlobs, collectSlotBlobsToDelete, BLOB_ORPHAN_CAP, BLOB_ORPHAN_MAX_ATTEMPTS,
 } from './blob-deletion';
 import { listBlobOrphanRows, putBlobOrphanRow, purgeAllUserData, getPreferences } from './db';
 import { AVATAR_UPLOADER_DOMAIN, BACKDROP_UPLOADER_DOMAIN } from './blossom-uploader';
@@ -160,5 +160,35 @@ describe('parseOrphanBlob / discardUpload', () => {
     expect(record).toHaveBeenCalledWith({ domain: AVATAR_UPLOADER_DOMAIN, hash: h(1), url: SERVER });
     await discardUpload({ domain: AVATAR_UPLOADER_DOMAIN, hash: h(1), server: SERVER, live: true, deleteBlob: async () => 'failed', recordOrphan: record });
     expect(record).toHaveBeenCalledTimes(2);
+  });
+});
+
+describe('collectSlotBlobsToDelete / deleteRemovedBlobs', () => {
+  beforeEach(async () => { await purgeAllUserData(); });
+
+  const holder = {
+    naturalPerson: { publicKey: h(1), avatarHash: h(10), avatarBlossomUrl: SERVER, backdropHash: h(11), backdropBlossomUrl: SERVER, contactAvatarHash: h(12), contactAvatarBlossomUrl: SERVER },
+    persona: { publicKey: h(2), avatarHash: h(10), avatarBlossomUrl: SERVER },
+    extraPersonas: [{ publicKey: h(3), backdropHash: h(13), backdropBlossomUrl: SERVER }],
+  };
+
+  it('collects avatar and backdrop of every slot once per hash, never the #242 share copy', () => {
+    const got = collectSlotBlobsToDelete(holder, ['avatar', 'backdrop']);
+    expect(got.map(b => `${b.domain === AVATAR_UPLOADER_DOMAIN ? 'a' : 'b'}${b.hash.slice(-2)}`).sort()).toEqual(['a0a', 'b0b', 'b0d']);
+    expect(collectSlotBlobsToDelete(holder, ['backdrop'], [h(3)]).map(b => b.hash)).toEqual([h(13)]);
+    expect(collectSlotBlobsToDelete(null, ['avatar'])).toEqual([]);
+  });
+
+  it('locked: nothing is sent and every blob is recorded for the sweep', async () => {
+    const deleteBlob = vi.fn();
+    await deleteRemovedBlobs(collectSlotBlobsToDelete(holder, ['backdrop']), { deleteBlob, isLive: () => false });
+    expect(deleteBlob).not.toHaveBeenCalled();
+    expect(await hashes()).toEqual([h(11), h(13)].sort());
+  });
+
+  it('kept while live (still referenced) records nothing; failed records', async () => {
+    const deleteBlob = vi.fn(async (_d: string, hash: string) => (hash === h(11) ? 'kept' as const : 'failed' as const));
+    await deleteRemovedBlobs(collectSlotBlobsToDelete(holder, ['backdrop']), { deleteBlob, isLive: () => true });
+    expect(await hashes()).toEqual([h(13)]);
   });
 });

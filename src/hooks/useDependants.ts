@@ -18,6 +18,7 @@ import { nextDependantPersonaName, dependantPersonaTombstones, applyDependantPer
 import { createSerialQueue } from '../lib/contacts-v2-queue';
 import { listIndependenceArchives } from '../lib/independence-store';
 import { sanitizeDisplayName } from '../lib/text-sanitize';
+import { collectSlotBlobsToDelete, deleteRemovedBlobs, type BlobDeleter, type SlotBlobToDelete } from '../lib/blob-deletion';
 
 // Serialize allocation/deletion across hook instances in this app.
 const personaMutations = createSerialQueue();
@@ -38,6 +39,25 @@ function findSlot(dep: DependantIdentity, target: SlotTarget): Partial<ExtraPers
   if (target === 'natural-person') return dep.naturalPerson;
   if (target === 'persona') return dep.persona;
   return (dep.extraPersonas ?? []).find(p => p.publicKey === target);
+}
+
+const NO_BACKDROP = { backdropHash: undefined, backdropBlossomUrl: undefined, backdropKey: undefined, backdropUpdatedAt: undefined, backdropSentDigest: undefined };
+
+/** Whether a slot names any part of a sent backdrop. */
+function slotHasBackdrop(slot: Partial<ExtraPersona>): boolean {
+  return !!(slot.backdropHash || slot.backdropBlossomUrl || slot.backdropKey || slot.backdropSentDigest || slot.backdropUpdatedAt);
+}
+
+/** `dep` with every slot's sent-backdrop pointer cleared (null when none names one). The local `backdrop:` rows are not touched. */
+function withoutBackdropPointers(dep: DependantIdentity): DependantIdentity | null {
+  const slots: Array<Partial<ExtraPersona>> = [dep.naturalPerson, dep.persona, ...(dep.extraPersonas ?? [])];
+  if (!slots.some(slotHasBackdrop)) return null;
+  return {
+    ...dep,
+    naturalPerson: { ...dep.naturalPerson, ...NO_BACKDROP },
+    persona: { ...dep.persona, ...NO_BACKDROP },
+    extraPersonas: dep.extraPersonas?.map(p => ({ ...p, ...NO_BACKDROP })),
+  };
 }
 
 /**
@@ -67,6 +87,13 @@ export function useDependants(
    */
   guardianIdentityId?: string,
   encryptionKey?: string | null,
+  options?: {
+    /**
+     * Deletes one of this install's Blossom blobs (App's `deleteOwnBlob`: R1
+     * is enforced there). Without it, removal and unpair leave blobs alone.
+     */
+    deleteBlob?: BlobDeleter;
+  },
 ) {
   /**
    * Fresh-decrypt the guardian identity from IDB for the caller's key.
@@ -96,6 +123,19 @@ export function useDependants(
   // state AFTER the lock cleared them. Compare against this before writing.
   const liveKeyRef = useRef(encryptionKey);
   useEffect(() => { liveKeyRef.current = encryptionKey; }, [encryptionKey]);
+  const deleteBlobRef = useRef(options?.deleteBlob);
+  deleteBlobRef.current = options?.deleteBlob;
+
+  /**
+   * Delete blobs whose slot just left the stored record (removal, unpair).
+   * Starts at once and settles when done; never throws and never fails the
+   * change that called it. Locked or unreachable: recorded as orphans.
+   */
+  const deleteGoneBlobs = useCallback((blobs: readonly SlotBlobToDelete[]): Promise<void> => {
+    const deleteBlob = deleteBlobRef.current;
+    if (blobs.length === 0 || !deleteBlob) return Promise.resolve();
+    return deleteRemovedBlobs(blobs, { deleteBlob, isLive: () => liveKeyRef.current !== null });
+  }, []);
 
   /**
    * Change one dependant record through the serialised fresh-read writer
@@ -252,7 +292,18 @@ export function useDependants(
     return dep;
   }, [guardianPubkey, encryptionKey, loadDependants]);
 
-  const removeDependant = useCallback(async (pubkey: string) => {
+  const removeDependant = useCallback(async (
+    pubkey: string,
+    opts?: {
+      /**
+       * Leave the avatar and backdrop blobs on the server. The independence
+       * handover sets it: the handed-over child's own install still points at
+       * the avatars the guardian uploaded (its inventory merge copied them onto
+       * its slots), so deleting them would blank the child's pictures.
+       */
+      keepBlobs?: boolean;
+    },
+  ): Promise<{ deletion: Promise<void> }> => {
     // Clear grants + identity together. Dependant pubkeys are derived
     // deterministically from the guardian mnemonic + index (see
     // `deriveDependantIdentity`) — re-adding a dependant at the same index
@@ -265,7 +316,17 @@ export function useDependants(
     // paired-child cache for this dep. Re-adding the dep at the same index
     // would otherwise re-attach to leftover pre-auth grants for personas
     // whose keypairs may or may not be the same after re-derive.
-    const dep = dependants.find(d => d.id === pubkey);
+    let dep = dependants.find(d => d.id === pubkey);
+    // The blobs to delete are read from the record as stored NOW (a sync or an
+    // avatar change may have landed since the snapshot), before it is deleted.
+    if (!opts?.keepBlobs) {
+      const key = liveKeyRef.current;
+      if (key) {
+        try {
+          await mutate(pubkey, key, fresh => { if (fresh) dep = fresh; return null; });
+        } catch { /* fall back to the snapshot */ }
+      }
+    }
     if (dep) {
       try {
         const dbMod = await import('../lib/db');
@@ -292,8 +353,12 @@ export function useDependants(
       ]);
       for (const key of keys) await forgetCardBackdrop(key);
     }
+    // The record is gone, so nothing stored points at its blobs any more (R1
+    // is still checked by the deleter against every other row).
+    const deletion = opts?.keepBlobs ? Promise.resolve() : deleteGoneBlobs(collectSlotBlobsToDelete(dep, ['avatar', 'backdrop']));
     await loadDependants();
-  }, [dependants, loadDependants]);
+    return { deletion };
+  }, [dependants, loadDependants, mutate, deleteGoneBlobs]);
 
   const updateAutonomyStage = useCallback(async (pubkey: string, stage: AutonomyStage) => {
     if (!encryptionKey) throw new Error('Encryption key required');
@@ -836,10 +901,12 @@ export function useDependants(
     personaPubkey: string,
   ) => personaMutations.run(async () => {
     if (!encryptionKey) throw new Error('Encryption key required');
+    let blobs: SlotBlobToDelete[] = [];
     const saved = await mutate(depPubkey, encryptionKey, dep => {
       if (!dep) return null;
       const persona = dep.extraPersonas?.find(p => p.publicKey === personaPubkey);
       if (!persona) return null;
+      blobs = collectSlotBlobsToDelete(dep, ['avatar', 'backdrop'], [personaPubkey]);
       const extraPersonaTombstones = dependantPersonaTombstones(dep.derivationPath, [
         ...(dep.extraPersonaTombstones ?? []),
         { derivationName: persona.derivationName, removedAt: Date.now() },
@@ -851,7 +918,7 @@ export function useDependants(
         primaryKeypair: dep.primaryKeypair === personaPubkey ? 'persona' : dep.primaryKeypair,
       });
     });
-    if (!saved) return;
+    if (!saved) return { deletion: Promise.resolve() };
     // Sweep any §5.4.1 pre-auth records keyed on the removed persona so they
     // don't linger for up to 24h after the persona is gone. Best-effort —
     // an IDB hiccup here shouldn't block the reload.
@@ -859,8 +926,12 @@ export function useDependants(
       const dbMod = await import('../lib/db');
       await dbMod.deletePublicProfileSignAuthByPersona(depPubkey, personaPubkey);
     } catch { /* best-effort — 24h TTL is the fallback */ }
+    // The persona is gone from the stored record: its avatar and backdrop
+    // blobs go too (R1 still guards a blob another row references).
+    const deletion = deleteGoneBlobs(blobs);
     await loadDependants();
-  }), [mutate, encryptionKey, loadDependants]);
+    return { deletion };
+  }), [mutate, encryptionKey, loadDependants, deleteGoneBlobs]);
 
   /**
    * Soft-delete a dep's extra persona via the `ExtraPersona.hidden` flag.
@@ -1041,12 +1112,18 @@ export function useDependants(
     const key = overrideEncryptionKey || encryptionKey;
     if (!key) throw new Error('Encryption key required');
     let oldClientPubkey: string | undefined;
+    let blobs: SlotBlobToDelete[] = [];
     const saved = await mutate(pubkey, key, dep => {
       if (!dep || !dep.bunkerEndpoint) return null;
       oldClientPubkey = dep.bunkerEndpoint.authorizedClientPubkey;
-      return { ...dep, bunkerEndpoint: undefined };
+      // The phone is unpaired: what was sent to it goes with it. The pointers
+      // are cleared in the same write; the guardian's own `backdrop:` rows and
+      // every avatar stay, so the cards still show (a re-pair reads as unsent).
+      blobs = collectSlotBlobsToDelete(dep, ['backdrop']);
+      return { ...(withoutBackdropPointers(dep) ?? dep), bunkerEndpoint: undefined };
     });
     if (!saved) return;
+    void deleteGoneBlobs(blobs);
     // Sweep pre-auth records bound to the outgoing client pubkey BEFORE
     // anyone can mint a new endpoint. Skipped when the old endpoint had
     // never completed a `connect` handshake (no client pubkey, no records).
@@ -1060,7 +1137,35 @@ export function useDependants(
       }
     }
     await loadDependants();
-  }, [mutate, encryptionKey, loadDependants]);
+  }, [mutate, encryptionKey, loadDependants, deleteGoneBlobs]);
+
+  /**
+   * Unpair side of the card backdrops: clear every slot's sent-backdrop
+   * pointer (the child's phone no longer gets it) and delete the blobs behind
+   * them, once the record has saved. The guardian's own `backdrop:` rows and
+   * every avatar are untouched, so the cards still show; a re-pair finds the
+   * slots unsent and the backfill sends them again. Best effort: resolves
+   * either way, and never throws (an unpair must not fail on a picture).
+   */
+  const clearDependantBackdrops = useCallback(async (depId: string): Promise<void> => {
+    const key = liveKeyRef.current;
+    if (!key) return;
+    let blobs: SlotBlobToDelete[] = [];
+    try {
+      const saved = await mutate(depId, key, dep => {
+        if (!dep) return null;
+        // Checked after the write queue's wait: a lock during it saves nothing.
+        if (liveKeyRef.current !== key) throw new Error('Encryption key required');
+        blobs = collectSlotBlobsToDelete(dep, ['backdrop']);
+        return withoutBackdropPointers(dep);
+      });
+      if (!saved) return;
+    } catch {
+      return;
+    }
+    void deleteGoneBlobs(blobs);
+    if (liveKeyRef.current === key) await loadDependants();
+  }, [mutate, loadDependants, deleteGoneBlobs]);
 
   /** `mutate` for App-level writers (child-device fields, the migration strip). */
   const mutateDependantRecord = useCallback((
@@ -1069,5 +1174,5 @@ export function useDependants(
     fn: (dep: DependantIdentity | null) => DependantIdentity | null,
   ) => mutate(depId, key, fn), [mutate]);
 
-  return { dependants, loading, loadedWithKey, addDependant, importDependant, removeDependant, updateAutonomyStage, updateAuditVisibility, updatePetitionOnDeny, updateDependantName, updateDependantPhoto, switchDependantPrimary, updateDependantPersonaName, activateDependantNaturalPerson, addDependantPersona, updatePersonaVisibility, setDepExtraPersonaHidden, removeDependantExtraPersona, reorderDependants, ensureDependantBunkerEndpoint, clearDependantBunkerEndpoint, saveDependantPairingSecret, bindDependantBunkerClient, setDependantPersonaAvatar, clearDependantPersonaAvatar, setDependantPersonaContactAvatar, clearDependantPersonaContactAvatar, setDependantPersonaBackdrop, setDependantPersonaPublicProfile, clearDependantPersonaPublicProfile, setDependantSlotNip05Check, reload: loadDependants, loadFreshDependants, mutateDependantRecord };
+  return { dependants, loading, loadedWithKey, addDependant, importDependant, removeDependant, updateAutonomyStage, updateAuditVisibility, updatePetitionOnDeny, updateDependantName, updateDependantPhoto, switchDependantPrimary, updateDependantPersonaName, activateDependantNaturalPerson, addDependantPersona, updatePersonaVisibility, setDepExtraPersonaHidden, removeDependantExtraPersona, reorderDependants, ensureDependantBunkerEndpoint, clearDependantBunkerEndpoint, clearDependantBackdrops, saveDependantPairingSecret, bindDependantBunkerClient, setDependantPersonaAvatar, clearDependantPersonaAvatar, setDependantPersonaContactAvatar, clearDependantPersonaContactAvatar, setDependantPersonaBackdrop, setDependantPersonaPublicProfile, clearDependantPersonaPublicProfile, setDependantSlotNip05Check, reload: loadDependants, loadFreshDependants, mutateDependantRecord };
 }

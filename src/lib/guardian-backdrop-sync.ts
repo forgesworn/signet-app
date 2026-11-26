@@ -171,3 +171,25 @@ export async function syncGuardianBackdrops(identity: IdentityView | null, deps:
     // Silent: an orphan row is invisible, and the next run sweeps again.
   }
 }
+
+/**
+ * The pairing ended: drop every picture a guardian sent (`backdrop-guardian:`
+ * rows) and repaint, so each card falls back to the child's own pick or none.
+ * The child's own `backdrop:` picks stay. Best effort per row, never throws.
+ */
+export async function dropGuardianBackdrops(deps: Pick<GuardianBackdropDeps, 'deleteGuardianBackdrop' | 'listRowPubkeys' | 'refresh'>): Promise<void> {
+  let pubkeys: string[];
+  try { pubkeys = (await deps.listRowPubkeys()).guardian; } catch { return; }
+  for (const pubkey of pubkeys) {
+    try {
+      await deps.deleteGuardianBackdrop(pubkey);
+      await deps.refresh(pubkey);
+    } catch { /* the next run of the sweep retries */ }
+  }
+}
+
+export const defaultDropGuardianBackdropDeps = (): Pick<GuardianBackdropDeps, 'deleteGuardianBackdrop' | 'listRowPubkeys' | 'refresh'> => ({
+  deleteGuardianBackdrop: db.deleteGuardianBackdrop,
+  listRowPubkeys: db.listBackdropRowPubkeys,
+  refresh: refreshCardBackdrop,
+});
