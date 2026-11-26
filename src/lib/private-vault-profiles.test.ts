@@ -1,7 +1,9 @@
 import { beforeEach, expect, it } from 'vitest';
 import { createNewIdentity } from './signet';
 import { profilesVaultAdapter } from './private-vault-profiles';
-import { purgeAllUserData, saveIdentityEncrypted, loadIdentityDecrypted } from './db';
+import { openDB } from 'idb';
+import { purgeAllUserData, saveIdentityEncrypted, loadIdentityDecrypted, saveDependant, getDependants } from './db';
+import type { DependantIdentity } from '../types';
 const KEY = 'profile vault test unlock';
 beforeEach(async () => { await purgeAllUserData(); });
 it('backs up profile metadata without root or identity secrets and restores a newer default name', async () => {
@@ -58,4 +60,34 @@ it('recovers bot metadata and spent derivation slots without backing up standalo
   const invalid = JSON.parse(snapshot);
   invalid.bots.bots.find((b: { source: string }) => b.source === 'derived').publicKey = 'f'.repeat(64);
   await expect(adapter.merge(JSON.stringify(invalid), 102)).rejects.toThrow('recovery tree');
+});
+
+it('restores the other dependants when one local row cannot be read, leaving that row alone', async () => {
+  const identity = createNewIdentity('Owner', 'persona', false);
+  await saveIdentityEncrypted(identity, KEY);
+  const owner = identity.naturalPerson.publicKey;
+  const dep = (n: string, name: string): DependantIdentity => ({
+    id: n.repeat(64), guardianPubkey: owner, displayName: name,
+    naturalPerson: { publicKey: n.repeat(64), privateKey: '', displayName: name },
+    persona: { publicKey: (n === '1' ? '3' : '4').repeat(64), privateKey: '', displayName: name },
+    derivationPath: `imported-view-${n.repeat(8)}`, createdAt: 1000, autonomyStage: 'full-control',
+    primaryKeypair: 'persona', naturalPersonActive: true,
+  });
+  await saveDependant(dep('1', 'Bad'), KEY);
+  await saveDependant(dep('2', 'Good'), KEY);
+  const adapter = profilesVaultAdapter({ identityId: identity.id, ownerPubkey: owner,
+    encryptionKey: KEY, mnemonic: identity.mnemonic, deviceHeldKeys: false, isCurrent: () => true });
+  const value = JSON.parse(await adapter.snapshot());
+  expect(value.dependants.dependants).toHaveLength(2);
+  // The backup names a new family label for both; one local row is now unreadable.
+  for (const w of value.dependants.dependants) w.displayName = `New ${w.displayName}`;
+  const raw = await openDB('my-signet');
+  try {
+    const row = await raw.get('identity', 'dependant:' + '1'.repeat(64));
+    row.naturalPerson.privateKey = 'not-a-ciphertext';
+    await raw.put('identity', row);
+  } finally { raw.close(); }
+  await adapter.merge(JSON.stringify(value), 1700000000);
+  const rows = await getDependants(owner, KEY);
+  expect(rows.map(d => d.displayName)).toEqual(['New Good']);
 });

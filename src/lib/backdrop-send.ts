@@ -12,7 +12,8 @@
 
 import { BlossomUploadError } from './blossom';
 import { BACKDROP_UPLOADER_DOMAIN } from './blossom-uploader';
-import { deleteReplacedBackdrop, type DeleteOutcome } from './blob-deletion';
+import { deleteReplacedBackdrop, discardUpload, type DeleteOutcome } from './blob-deletion';
+import { createSlotSequencer } from './slot-sequencer';
 import { uploadBackdrop, type BackdropMetadata } from './backdrop-blob';
 import { BACKDROP_COPY } from './child-device-copy';
 import type { BackdropSendResult } from './backdrop-send-context';
@@ -44,30 +45,55 @@ export interface BackdropSendDeps {
    * before it resolves: the delete that follows reads the stored rows (R1).
    * `sentDigest` is the sha256 of the local picture this pointer carries,
    * stored beside it so the card can tell whether the current picture was sent.
+   * `stillCurrent` (sends only) is for the writer to ask inside its own write
+   * queue: false means an unpair or a newer change outranked this send while it
+   * waited, and nothing may be saved.
    */
-  saveSlot: (meta: BackdropMetadata | null, sentDigest?: string) => Promise<{ previous?: { hash: string; server: string } }>;
+  saveSlot: (meta: BackdropMetadata | null, sentDigest?: string, stillCurrent?: () => boolean) => Promise<{ previous?: { hash: string; server: string } }>;
   deleteBlob: (domain: string, hash: string, server: string) => Promise<DeleteOutcome>;
+  /** Test seam: remember an upload that could not be deleted (defaults to the `blob-orphan:` rows). */
+  recordOrphan?: (entry: { domain: string; hash: string; url: string }) => Promise<void>;
+  /**
+   * An automatic resend (the backfill), never a user action. It yields to one:
+   * it sends only when nothing is in flight on the slot and the slot's
+   * generation is still the one the caller read BEFORE it looked at the stored
+   * rows, so a set or remove the user started meanwhile is never superseded by
+   * it. (The other direction needs nothing extra: a user action started after
+   * this one bumps the generation and this upload discards itself.)
+   */
+  backfill?: { generation: number };
 }
 
 // Per-slot "newest change" counters and save queues. Module-level because the
 // lookup (and so its closures) is rebuilt whenever the dependants state changes,
-// while an upload started before that is still in flight.
-const generations = new Map<string, number>();
-const queues = new Map<string, Promise<unknown>>();
+// while an upload started before that is still in flight. Backdrops only: the
+// avatar flow has its own sequencer.
+const backdropSlots = createSlotSequencer();
+// Sends and removes between their start and their save, per slot.
+const inFlight = new Map<string, number>();
 
-function bump(slotKey: string): number {
-  const next = (generations.get(slotKey) ?? 0) + 1;
-  generations.set(slotKey, next);
-  return next;
+/** Whether a send or remove is in flight on the slot, and the generation to hand `deps.backfill`. */
+export function backdropSlotState(slotKey: string): { busy: boolean; generation: number } {
+  return { busy: (inFlight.get(slotKey) ?? 0) > 0, generation: backdropSlots.current(slotKey) };
 }
 
-/** Run `task` after every earlier task on this slot has settled. */
-function serial<T>(slotKey: string, task: () => Promise<T>): Promise<T> {
-  const run = (queues.get(slotKey) ?? Promise.resolve()).then(task, task);
-  const tail = run.catch(() => undefined);
-  queues.set(slotKey, tail);
-  void tail.then(() => { if (queues.get(slotKey) === tail) queues.delete(slotKey); });
-  return run;
+/**
+ * Outrank every send in flight on a dependant's slots (an unpair is under way:
+ * an upload that lands after it must discard itself, not save a pointer the
+ * phone can no longer use). `slotTargets` as the lookup keys them.
+ */
+export function supersedeBackdropSends(dependantId: string, slotTargets: readonly string[]): void {
+  for (const target of slotTargets) backdropSlots.bump(`${dependantId}:${target}`);
+}
+
+async function whileInFlight<T>(slotKey: string, run: () => Promise<T>): Promise<T> {
+  inFlight.set(slotKey, (inFlight.get(slotKey) ?? 0) + 1);
+  try {
+    return await run();
+  } finally {
+    const left = (inFlight.get(slotKey) ?? 1) - 1;
+    if (left > 0) inFlight.set(slotKey, left); else inFlight.delete(slotKey);
+  }
 }
 
 /** The reason to show for a thrown upload error: the messages the upload path writes are already plain English. */
@@ -90,10 +116,22 @@ export async function sendBackdropToChild(
   if (!deps.blossomUrl) return { ok: false, reason: BACKDROP_COPY.reasons.noServer };
   if (!deps.blossomConsent) return { ok: false, reason: BACKDROP_COPY.reasons.noConsent };
 
+  // A backfill yields to any user action on the slot, started or in flight.
+  if (deps.backfill) {
+    const state = backdropSlotState(deps.slotKey);
+    if (state.busy || state.generation !== deps.backfill.generation) return { ok: false, reason: BACKDROP_COPY.reasons.superseded };
+  }
   // A newer send or a remove on this slot, started after this point, outranks
   // this one: it will find the counter moved on and discard what it uploaded.
-  const generation = bump(deps.slotKey);
+  const generation = backdropSlots.bump(deps.slotKey);
+  return whileInFlight(deps.slotKey, () => uploadAndSave(blob, { ...deps, blossomUrl: deps.blossomUrl as string, encryptionKey: deps.encryptionKey as string }, generation));
+}
 
+async function uploadAndSave(
+  blob: Blob,
+  deps: BackdropSendDeps & { blossomUrl: string; encryptionKey: string },
+  generation: number,
+): Promise<BackdropSendResult & { deletion?: Promise<unknown> }> {
   let meta: BackdropMetadata;
   let digest: string;
   try {
@@ -103,28 +141,42 @@ export async function sendBackdropToChild(
     return { ok: false, reason: reasonFor(err) };
   }
 
+  const startKey = deps.encryptionKey;
+  const live = () => {
+    const liveKey = deps.getKey ? deps.getKey() : startKey;
+    return liveKey !== null && liveKey === startKey;
+  };
   // The new blob is an orphan nothing references until the pointer lands.
-  const discard = () => { void deps.deleteBlob(BACKDROP_UPLOADER_DOMAIN, meta.hash, meta.blossomUrl).catch(() => undefined); };
+  // Deleted now while the key is live; otherwise (locked: deleting needs the
+  // unlock key, which seals the uploader secret) recorded for the next unlock's
+  // sweep (`blob-orphan:` rows).
+  const discard = () => {
+    void discardUpload({
+      domain: BACKDROP_UPLOADER_DOMAIN, hash: meta.hash, server: meta.blossomUrl,
+      live: live(), deleteBlob: deps.deleteBlob, recordOrphan: deps.recordOrphan,
+    });
+  };
 
-  const saved = await serial(deps.slotKey, async (): Promise<{ ok: true; previous?: { hash: string; server: string } } | { ok: false; reason: string }> => {
-    if (generations.get(deps.slotKey) !== generation) {
+  const saved = await backdropSlots.serial(deps.slotKey, async (): Promise<{ ok: true; previous?: { hash: string; server: string } } | { ok: false; reason: string }> => {
+    if (backdropSlots.current(deps.slotKey) !== generation) {
       discard();
       return { ok: false, reason: BACKDROP_COPY.reasons.superseded };
     }
-    const liveKey = deps.getKey ? deps.getKey() : deps.encryptionKey;
-    if (liveKey === null || liveKey !== deps.encryptionKey) {
-      // Locked mid-upload. Deleting needs the unlock key (the uploader secret is
-      // sealed under it), so while locked this attempt is a silent no-op and the
-      // blob stays on the server as an unreferenced, encrypted orphan.
+    if (!live()) {
+      // Locked (or re-unlocked under another key) mid-upload: save nothing.
       discard();
       return { ok: false, reason: BACKDROP_COPY.reasons.locked };
     }
     try {
-      const { previous } = await deps.saveSlot(meta, digest);
+      const { previous } = await deps.saveSlot(meta, digest, () => backdropSlots.current(deps.slotKey) === generation);
       return { ok: true, previous };
     } catch {
+      // A lock during the save's own wait makes it refuse: that is a lock too,
+      // and so is an unpair or newer change that ran in that wait.
+      const locked = !live();
+      const superseded = backdropSlots.current(deps.slotKey) !== generation;
       discard();
-      return { ok: false, reason: BACKDROP_COPY.reasons.failed };
+      return { ok: false, reason: locked ? BACKDROP_COPY.reasons.locked : superseded ? BACKDROP_COPY.reasons.superseded : BACKDROP_COPY.reasons.failed };
     }
   });
   if (!saved.ok) return saved;
@@ -138,15 +190,15 @@ export async function sendBackdropToChild(
 export async function removeBackdropFromChild(deps: Pick<BackdropSendDeps, 'slotKey' | 'saveSlot' | 'deleteBlob'>): Promise<void> {
   // Bumped before anything is awaited: an upload still in flight is now stale
   // and will discard itself, so a remove during a send wins.
-  bump(deps.slotKey);
-  const previous = await serial(deps.slotKey, async () => {
+  backdropSlots.bump(deps.slotKey);
+  const previous = await whileInFlight(deps.slotKey, () => backdropSlots.serial(deps.slotKey, async () => {
     try {
       return (await deps.saveSlot(null)).previous;
     } catch {
       // Still pointed at: leave the blob so the child's copy keeps working.
       return null;
     }
-  });
+  }));
   if (previous === null) return;
   await deleteReplacedBackdrop(previous, undefined, deps.deleteBlob).catch(() => undefined);
 }
@@ -159,7 +211,7 @@ export interface BackdropLinkEnv {
   getKey: () => string | null;
   blossomUrl: string | undefined;
   blossomConsent: boolean;
-  setSlot: (depId: string, target: string, meta: BackdropMetadata | null, sentDigest?: string) => Promise<{ previous?: { hash: string; server: string } }>;
+  setSlot: (depId: string, target: string, meta: BackdropMetadata | null, sentDigest?: string, stillCurrent?: () => boolean) => Promise<{ previous?: { hash: string; server: string } }>;
   deleteBlob: BackdropSendDeps['deleteBlob'];
   upload?: BackdropSendDeps['upload'];
 }
@@ -223,7 +275,9 @@ export function buildDependantBackdropLookup(env: BackdropLinkEnv): (pubkey: str
         blossomUrl: env.blossomUrl,
         blossomConsent: env.blossomConsent,
         upload: env.upload,
-        saveSlot: (meta, sentDigest) => env.setSlot(dep.id, t, meta, sentDigest),
+        saveSlot: (meta, sentDigest, stillCurrent) => (stillCurrent
+          ? env.setSlot(dep.id, t, meta, sentDigest, stillCurrent)
+          : env.setSlot(dep.id, t, meta, sentDigest)),
         deleteBlob: env.deleteBlob,
       });
       return {
@@ -232,8 +286,10 @@ export function buildDependantBackdropLookup(env: BackdropLinkEnv): (pubkey: str
         unlocked: env.getKey() !== null,
         sentDigest: slot.backdropSentDigest,
         sent: !!(slot.backdropHash && slot.backdropKey && slot.backdropBlossomUrl),
-        send: blob => (canSend
-          ? sendBackdropToChild(blob, deps())
+        slotKey: `${dep.id}:${t}`,
+        pairing: dep.bunkerEndpoint?.authorizedClientPubkey,
+        send: (blob, opts) => (canSend
+          ? sendBackdropToChild(blob, { ...deps(), backfill: opts?.backfill })
           : Promise.resolve<BackdropSendResult>({ ok: false, reason: BACKDROP_COPY.reasons.failed })),
         remove: () => removeBackdropFromChild(deps()),
       };

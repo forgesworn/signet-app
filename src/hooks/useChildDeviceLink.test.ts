@@ -5,7 +5,7 @@ import { generateSecretKey, getPublicKey } from 'nostr-tools/pure';
 import { bytesToHex } from '@noble/hashes/utils.js';
 import type { NostrEvent } from 'signet-protocol';
 import { buildChildRulesEvent, CHILD_RULES_WIRE_D_TAG, type ChildRulesPayload } from '../lib/child-rules-wire';
-import { clearChildRulesCache, loadChildRulesCache, saveChildRulesCache } from '../lib/db';
+import { clearChildRulesCache, loadChildRulesCache, saveChildRulesCache, setGuardianBackdrop, setCardBackdrop, listBackdropRowPubkeys } from '../lib/db';
 import type { BunkerBackendRouter } from '../lib/bunker-router';
 import type { PairedChildRecord } from '../types';
 import { useChildDeviceLink, APPROVE_IDENTITY_PLAINTEXT, APPROVAL_CHANGED_RETRIES, UNPAUSE_SETTLE_MS, type ChildLinkTransport } from './useChildDeviceLink';
@@ -656,6 +656,22 @@ describe('useChildDeviceLink — unpaired (§9.4)', () => {
     expect(result.current.unpaired).toBe(true);
     expect(result.current.rules).toBeNull();
     await waitFor(async () => expect(await loadChildRulesCache(DEP, KEY)).toBeNull());
+  });
+
+  it('unpairing drops every guardian-sent backdrop row and keeps the phone\'s own picks (B1)', async () => {
+    const G1 = '11'.repeat(32), G2 = '22'.repeat(32), OWN = '33'.repeat(32);
+    await setGuardianBackdrop(G1, new Blob(['a']), 'h1');
+    await setGuardianBackdrop(G2, new Blob(['b']), 'h2');
+    await setCardBackdrop(OWN, new Blob(['c']));
+    await setCardBackdrop(G1, new Blob(['d']));
+    const { t, subs } = fakeTransport();
+    const { result } = renderHook(() => useChildDeviceLink({ record: record(), encryptionKey: KEY, router: null, onRecordUpdated: async () => {}, transport: t }));
+    await waitFor(() => expect(subs.length).toBe(1));
+    expect((await listBackdropRowPubkeys()).guardian.sort()).toEqual([G1, G2].sort());
+    await act(async () => { subs[0].onEvent(buildUnpairedNotice(railPriv, clientPub)); });
+    expect(result.current.unpaired).toBe(true);
+    await waitFor(async () => expect((await listBackdropRowPubkeys()).guardian).toEqual([]));
+    expect((await listBackdropRowPubkeys()).own.sort()).toEqual([G1, OWN].sort());
   });
 
   it('a notice from the wrong author is ignored', async () => {

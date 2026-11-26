@@ -27,8 +27,16 @@ export interface DependantBackdropLink {
   sent: boolean;
   /** sha256 of the local picture that copy was made from; compared with the current local picture to tell if it is the one sent. */
   sentDigest?: string;
-  /** Encrypt, upload and publish the already-saved local picture. Never throws. */
-  send(blob: Blob): Promise<BackdropSendResult>;
+  /** The slot's sequencing key (`backdropSlotState` reads it); the same slot always has the same key. */
+  slotKey: string;
+  /** The paired phone's client key; a re-pair changes it, which makes an already-sent picture worth sending again. */
+  pairing?: string;
+  /**
+   * Encrypt, upload and publish the already-saved local picture. Never throws.
+   * `opts.backfill` marks an automatic resend that yields to any user action on
+   * the slot (see `BackdropSendDeps.backfill`).
+   */
+  send(blob: Blob, opts?: { backfill?: { generation: number } }): Promise<BackdropSendResult>;
   /** Clear the slot's pointer, republish and delete the blob. Never throws. */
   remove(): Promise<void>;
 }

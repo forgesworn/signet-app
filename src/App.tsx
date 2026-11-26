@@ -84,7 +84,8 @@ import { useState, useCallback, useEffect, useRef, useMemo } from 'react';
 import type { Page, CarouselRow, SignetIdentity, KnownPlace } from './types';
 import { resolveAuthSelectionIdentity, findRowForGuardianKeypair, findRowForDependant, resolveDependantCardSlot } from './lib/carousel-utils';
 import { resolveSelectedPubkey } from './lib/auth-selection';
-import { deleteOwnedBlob, deleteReplacedAvatar, deleteStoppedShareCopy, findSlotBlobs, type DeleteOutcome } from './lib/blob-deletion';
+import { deleteOwnedBlob, deleteStoppedShareCopy, findSlotBlobs, sweepOrphanBlobs, type DeleteOutcome } from './lib/blob-deletion';
+import { setSlotAvatar, clearSlotAvatar, avatarChangeOutcome } from './lib/avatar-send';
 import { PUBLIC_PICTURE_UPLOADER_DOMAIN, VENUE_PHOTO_UPLOADER_DOMAIN } from './lib/blossom-uploader';
 import { downscaleAvatar, uploadAvatar, uploadPublicPicture, fetchAvatar, uploadContactAvatar, AVATAR_MAX_EDGE_PX, PUBLIC_PICTURE_MAX_EDGE_PX, PUBLIC_BANNER_MAX_EDGE_PX } from './lib/avatar';
 import { generateContactAvatarKey } from './lib/photo-crypto';
@@ -130,6 +131,7 @@ import { useDependantStatusPublisher } from './hooks/useDependantStatusPublisher
 import { useDependantStatus } from './hooks/useDependantStatus';
 import { usePersonaInventoryPublisher } from './hooks/usePersonaInventoryPublisher';
 import { usePersonaInventory } from './hooks/usePersonaInventory';
+import { useBackdropBackfill } from './hooks/useBackdropBackfill';
 import { useBunkerServer, type BunkerRoute, type BunkerServeStatus } from './hooks/useBunkerServer';
 import { useEscalations } from './hooks/useEscalations';
 import {
@@ -489,8 +491,8 @@ import { useRosterWatch } from './hooks/useRosterWatch';
 import { isAuthSetUp, generateEncryptionKey, clearAuthData, getAuthMethod, authenticateGrace } from './lib/auth';
 import { resolveLegacyGuestKey, nextLegacyMigrationState, isLegacyUnprotectedInstall } from './lib/legacy-guest';
 import { PAGE_AUTH_CONTEXTS, type PurposeContext } from './lib/auth-purposes';
-import { forgetChildRuleCache, loadIdentityDecrypted, cleanupUnencryptedIdentities, purgeAllUserData, saveBunkerSecret, deleteBunkerSecret, setPairedChildIdentityApprovals, loadBunkerSecret, getPreferences, savePreferences, migrateCleartextBunkerUri, saveIdentityEncrypted, saveChildModeSession, loadChildModeSession, clearChildModeSession, loadDependantSignInFacts, savePairedChild, loadPairedChild, markPairedChildConnected, listPairedChildMetas, listAllGrantsIncludingTombstones, getChildSettings, saveConnectedClient, deleteConnectedClient, getConnectedClient, addAppBunkerPairingAndClearSecret as dbAddAppBunkerPairingAndClearSecret, ensureAppBunkerEndpoint as dbEnsureAppBunkerEndpoint, setAppBunkerPairingSecret as dbSetAppBunkerPairingSecret, listAppBunkerPairings as dbListAppBunkerPairings, removeAppBunkerPairing as dbRemoveAppBunkerPairing, repairPairedChild, clearPairedChildPersonaRevision, saveContactAvatar, clearGraceState, clearGraceKey, listCompanionGrants, saveCompanionGrant, getContacts, getKens, saveDependant, loadProPersonaDecrypted, saveProPersonaEncrypted } from './lib/db';
-import { stripIdentityKeys, stripDependantKeys, clearMigratedKeyReferences } from './lib/heartwood-strip';
+import { forgetChildRuleCache, loadIdentityDecrypted, cleanupUnencryptedIdentities, purgeAllUserData, saveBunkerSecret, deleteBunkerSecret, setPairedChildIdentityApprovals, loadBunkerSecret, getPreferences, savePreferences, migrateCleartextBunkerUri, saveIdentityEncrypted, saveChildModeSession, loadChildModeSession, clearChildModeSession, loadDependantSignInFacts, savePairedChild, loadPairedChild, markPairedChildConnected, listPairedChildMetas, listAllGrantsIncludingTombstones, getChildSettings, saveConnectedClient, deleteConnectedClient, getConnectedClient, addAppBunkerPairingAndClearSecret as dbAddAppBunkerPairingAndClearSecret, ensureAppBunkerEndpoint as dbEnsureAppBunkerEndpoint, setAppBunkerPairingSecret as dbSetAppBunkerPairingSecret, listAppBunkerPairings as dbListAppBunkerPairings, removeAppBunkerPairing as dbRemoveAppBunkerPairing, repairPairedChild, clearPairedChildPersonaRevision, saveContactAvatar, clearGraceState, clearGraceKey, listCompanionGrants, saveCompanionGrant, getContacts, getKens, loadProPersonaDecrypted, saveProPersonaEncrypted } from './lib/db';
+import { stripIdentityKeys, stripDependantKeys, clearMigratedKeyReferences, restoreDependantPrivateKeys } from './lib/heartwood-strip';
 import type { EnrolmentSlot } from './lib/heartwood-enrolment';
 import { deriveDependantOnDevice, deriveExtraPersonaOnDevice, trackDeviceDerive } from './lib/heartwood-dependant-create';
 import type { HeartwoodRequestFn } from './lib/heartwood-dependant-create';
@@ -931,8 +933,10 @@ function AppContent() {
   // Always use NP pubkey for dependant lookup — dependants are stored with guardianPubkey
   // as the NP key, so switching to persona must not lose sight of them.
   const guardianNpPubkey = identity?.naturalPerson.publicKey;
-  const { dependants, loading: dependantsLoading, loadedWithKey: dependantsLoadedWithKey, addDependant, importDependant, removeDependant: removeDependantRecord, updateAutonomyStage, updateAuditVisibility, updatePetitionOnDeny, updateDependantName, updateDependantPhoto, switchDependantPrimary, updateDependantPersonaName, activateDependantNaturalPerson, addDependantPersona, updatePersonaVisibility, removeDependantExtraPersona, reorderDependants, ensureDependantBunkerEndpoint, clearDependantBunkerEndpoint, saveDependantPairingSecret, bindDependantBunkerClient, setDependantPersonaAvatar, clearDependantPersonaAvatar, setDependantPersonaContactAvatar, clearDependantPersonaContactAvatar, setDependantPersonaBackdrop, setDependantPersonaPublicProfile, clearDependantPersonaPublicProfile, setDependantSlotNip05Check, setDepExtraPersonaHidden, reload: reloadDependants, loadFreshDependants } = useDependants(
+  const { dependants, loading: dependantsLoading, loadedWithKey: dependantsLoadedWithKey, addDependant, importDependant, removeDependant: removeDependantRecord, updateAutonomyStage, updateAuditVisibility, updatePetitionOnDeny, updateDependantName, updateDependantPhoto, switchDependantPrimary, updateDependantPersonaName, activateDependantNaturalPerson, addDependantPersona, updatePersonaVisibility, removeDependantExtraPersona, reorderDependants, ensureDependantBunkerEndpoint, clearDependantBunkerEndpoint, saveDependantPairingSecret, bindDependantBunkerClient, setDependantPersonaAvatar, clearDependantPersonaAvatar, setDependantPersonaContactAvatar, clearDependantPersonaContactAvatar, setDependantPersonaBackdrop, setDependantPersonaPublicProfile, clearDependantPersonaPublicProfile, setDependantSlotNip05Check, setDepExtraPersonaHidden, reload: reloadDependants, loadFreshDependants, mutateDependantRecord, clearDependantBackdrops } = useDependants(
     guardianNpPubkey, identity?.id, encryptionKey,
+    // `deleteOwnBlob` is declared just below; it only runs when a removal or an unpair fires.
+    { deleteBlob: (domain, hash, server) => deleteOwnBlob(domain, hash, server) },
   );
 
   // Blossom blob deletion (design 2026-10-07 §2). Signs with the HMAC uploader
@@ -944,9 +948,6 @@ function AppContent() {
   // reads the live key, so a closure kept across a lock cannot delete after it.
   const deleteOwnBlob = (domain: string, hash: string, server: string, key: string | null = encryptionKeyRef.current): Promise<DeleteOutcome> =>
     deleteOwnedBlob({ hash, server, domain, encryptionKey: key });
-  /** Delete the private avatar a Change/Remove just replaced (R3); resolves with the one-line result. */
-  const dropReplacedAvatar = (old: { hash: string; server: string } | undefined, newHash: string | undefined, key: string): Promise<string | undefined> =>
-    deleteReplacedAvatar(old, newHash, (domain, hash, server) => deleteOwnBlob(domain, hash, server, key));
   // A guardian-set card backdrop for a dependant's persona goes to the child's
   // phone, encrypted, over the persona inventory. This is the card-to-child link
   // `useCardBackdrop` reads from context; a paired-child install gets none, so it
@@ -958,12 +959,23 @@ function AppContent() {
     getKey: () => encryptionKeyRef.current,
     blossomUrl: preferences.defaultBlossomUrl ?? DEFAULT_BLOSSOM_URL,
     blossomConsent,
-    setSlot: (depId, target, meta, sentDigest) => setDependantPersonaBackdrop(depId, target, meta
+    setSlot: (depId, target, meta, sentDigest, stillCurrent) => setDependantPersonaBackdrop(depId, target, meta
       ? { hash: meta.hash, blossomUrl: meta.blossomUrl, keyHex: meta.keyHex, updatedAt: meta.updatedAt, sentDigest }
-      : null),
+      : null, { stillCurrent }),
     deleteBlob: (domain, hash, server) => deleteOwnBlob(domain, hash, server),
   // `deleteOwnBlob` reads the live key from a ref, so it is not a dependency.
   }), [isPairedChild, dependants, preferences.defaultBlossomUrl, blossomConsent, setDependantPersonaBackdrop]);
+  // Backdrops picked while no phone was paired (or before a re-pair) go out on their
+  // own once the dependants are loaded: the slots whose card would read "Send to ...".
+  const backdropSlotPubkeys = useMemo(() => dependants.flatMap(d => [
+    d.persona.publicKey, d.naturalPerson.publicKey, ...(d.extraPersonas ?? []).map(p => p.publicKey),
+  ]), [dependants]);
+  useBackdropBackfill({
+    enabled: !isPairedChild && blossomConsent && dependantsLoadedWithKey && !!encryptionKey,
+    encryptionKey,
+    slotPubkeys: backdropSlotPubkeys,
+    lookup: dependantBackdropLookup,
+  });
   // Home-ring backup nudge (spec §10) — replaces the retired no-lock nag in
   // the same slot. `identity` and `encryptionKey` gate it to the unlocked,
   // loaded state; the rule itself lives in `shouldShowBackupNudge`. Holding a
@@ -1026,11 +1038,11 @@ function AppContent() {
   // Every removal of a dependant on this device ends it as a scope for the
   // session (a sync may merge the record back; it must not become "Managing"
   // them again). The hook's own remover is not called anywhere else.
-  const removeDependant = useCallback(async (dependantId: string) => {
+  const removeDependant = useCallback(async (dependantId: string, opts?: { keepBlobs?: boolean }) => {
     // finally: the record is deleted before the hook's follow-up steps, so a
     // throw from one of those must still end the scope.
     try {
-      await removeDependantRecord(dependantId);
+      await removeDependantRecord(dependantId, opts);
     } finally {
       endDependantScope(dependantId);
     }
@@ -1088,6 +1100,21 @@ function AppContent() {
   // PWA update refs (avoid stale closures in effects)
   const encryptionKeyRef = useRef(encryptionKey);
   encryptionKeyRef.current = encryptionKey;
+  // Gap 5: once per unlock, delete the uploads a lock (or an unreachable server)
+  // left on Blossom with nothing pointing at them (`blob-orphan:` rows). Bound
+  // to this unlock's key; the sweep stops as soon as that key is no longer
+  // live. A paired-child install never uploads, so it has nothing to sweep.
+  const orphanSweepDoneRef = useRef(false);
+  useEffect(() => {
+    if (!encryptionKey) { orphanSweepDoneRef.current = false; return; }
+    if (isPairedChild || orphanSweepDoneRef.current) return;
+    orphanSweepDoneRef.current = true;
+    const key = encryptionKey;
+    void sweepOrphanBlobs({
+      deleter: (domain, hash, server) => deleteOwnedBlob({ hash, server, domain, encryptionKey: key }),
+      isLive: () => encryptionKeyRef.current === key,
+    });
+  }, [encryptionKey, isPairedChild]);
   // Owner-only recovery operations recheck identity/unlock after each await.
   async function authenticateWrappedBackup() {
     const ownerId = identityRef.current?.id;
@@ -2135,14 +2162,15 @@ function AppContent() {
       try {
         for (const { dep, seed } of work) {
           for (const r of seed) await saveChildRule(r, key);
-          const fresh = (await loadFreshDependants(key)).find(d => d.id === dep.id);
-          if (fresh?.childDevice) await saveDependant({ ...fresh, childDevice: { ...fresh.childDevice, seedPending: undefined } }, key);
+          await mutateDependantRecord(dep.id, key, fresh => (fresh?.childDevice
+            ? { ...fresh, childDevice: { ...fresh.childDevice, seedPending: undefined } }
+            : null));
         }
         await reloadChildRules();
         await reloadDependants();
       } catch { /* retried on the next change */ } finally { seedingRef.current = false; }
     })();
-  }, [encryptionKey, isPairedChild, childRules, grantsForSync, dependants, loadFreshDependants, reloadChildRules, reloadDependants]);
+  }, [encryptionKey, isPairedChild, childRules, grantsForSync, dependants, mutateDependantRecord, reloadChildRules, reloadDependants]);
 
   useChildRulesSync({
     publishEnabled: !isPairedChild && legacyPrivateWrite('settings'),
@@ -2213,15 +2241,6 @@ function AppContent() {
       setInventoryMergeCount(c => c + 1);
     },
   });
-  // The guardian's card backdrops for this child's personas: fetched while
-  // unlocked on a paired-child install, retried on every inventory apply.
-  useGuardianBackdrops({
-    enabled: preferences.signingMode === 'paired-child' && !!encryptionKey,
-    encryptionKey,
-    identity,
-    mergeCount: inventoryMergeCount,
-  });
-
   const pairedContactPolicy = useChildContactPolicy({
     enabled: isPairedChild && !!encryptionKey, child: preferences.activeAccountId ?? identity?.id ?? null,
     key: encryptionKey, relayUrl: preferences.relayUrl ?? DEFAULT_RELAY_URL,
@@ -2428,6 +2447,16 @@ function AppContent() {
     inventoryPersonas: childLinkInventory,
     withheldSlots: slotResolveOpts.withheld,
     onRecordUpdated: async (r) => { await setPairedChildIdentityApprovals(r.id, r.identityApprovals ?? {}, r.identityPressedAt ?? {}); },
+  });
+  // The guardian's card backdrops for this child's personas: fetched while
+  // unlocked on a paired-child install, retried on every inventory apply. Not
+  // once the guardian has unpaired this phone: `markUnpaired` just dropped the
+  // rows, and the stored slots still name the (deleted) blobs.
+  useGuardianBackdrops({
+    enabled: preferences.signingMode === 'paired-child' && !!encryptionKey && !childDeviceLink.unpaired,
+    encryptionKey,
+    identity,
+    mergeCount: inventoryMergeCount,
   });
 
   // The child's gate (spec §8): the one choke point for sign-in, the child's
@@ -5615,8 +5644,8 @@ function AppContent() {
   const [pendingOperatorImportText, setPendingOperatorImportText] = useState<string | null>(null);
 
   // Live values for the DEV bench helpers below (the harness effect has [] deps).
-  const benchRef = useRef({ setRelayUrl, encryptionKey, dependants, updateAutonomyStage, updateAuditVisibility, updatePetitionOnDeny, reloadDependants });
-  benchRef.current = { setRelayUrl, encryptionKey, dependants, updateAutonomyStage, updateAuditVisibility, updatePetitionOnDeny, reloadDependants };
+  const benchRef = useRef({ setRelayUrl, encryptionKey, dependants, updateAutonomyStage, updateAuditVisibility, updatePetitionOnDeny, reloadDependants, mutateDependantRecord });
+  benchRef.current = { setRelayUrl, encryptionKey, dependants, updateAutonomyStage, updateAuditVisibility, updatePetitionOnDeny, reloadDependants, mutateDependantRecord };
   // The harness effect has [] deps, so the grant-set bump is read through a
   // ref too rather than captured from the first render's closure.
   const bumpContactsGrantSetRef = useRef(bumpContactsGrantSet);
@@ -5722,13 +5751,14 @@ function AppContent() {
         bumpContactsGrantSetRef.current();
       },
       setDependantDefaultSchedule: async (pubkey: string, schedule: import('./types').GrantSchedule | undefined) => {
-        const { encryptionKey: key, dependants: deps, reloadDependants: reload } = benchRef.current;
+        const { encryptionKey: key, mutateDependantRecord: mutateDep, reloadDependants: reload } = benchRef.current;
         if (!key) throw new Error('locked');
-        const dep = deps.find(d => d.id === pubkey);
-        if (!dep) throw new Error('no such dependant');
-        const next = { ...dep } as typeof dep;
-        if (schedule) next.defaultSchedule = schedule; else delete next.defaultSchedule;
-        await saveDependant(next, key);
+        await mutateDep(pubkey, key, dep => {
+          if (!dep) throw new Error('no such dependant');
+          const next = { ...dep };
+          if (schedule) next.defaultSchedule = schedule; else delete next.defaultSchedule;
+          return next;
+        });
         await reload();
       },
     };
@@ -7930,7 +7960,9 @@ function AppContent() {
     const originalDeps = [...dependants];
     let originalPro = await loadProPersonaDecrypted(encryptionKey);
 
-    const strippedDepIds: string[] = [];
+    // Each stripped dependant as it was stored just before its strip (read in
+    // the dependant write queue), for the rollback.
+    const strippedOriginals: DependantIdentity[] = [];
     try {
       // 1. Strip the identity record — mnemonic + NP/Persona/Pro/
       // tree-derived-extras private keys whose token verified.
@@ -7950,12 +7982,13 @@ function AppContent() {
       // stripDependantKeys returns null for an imported dependant OR a
       // dependant with no verified tokens this run — leave it untouched,
       // don't save.
-      for (const dep of originalDeps) {
-        const s = stripDependantKeys(dep, verifiedTokens);
-        if (s) {
-          await saveDependant(s, encryptionKey);
-          strippedDepIds.push(dep.id);
-        }
+      for (const { id: depId } of originalDeps) {
+        let original: DependantIdentity | null = null;
+        const saved = await mutateDependantRecord(depId, encryptionKey, fresh => {
+          original = fresh;
+          return fresh ? stripDependantKeys(fresh, verifiedTokens) : null;
+        });
+        if (saved && original) strippedOriginals.push(original);
       }
     } catch (err) {
       // Rollback: best-effort, each restore in its own try so one restore
@@ -7967,11 +8000,12 @@ function AppContent() {
       if (originalPro !== null) {
         try { await saveProPersonaEncrypted(originalPro, encryptionKey); } catch { /* best-effort */ }
       }
-      for (const depId of strippedDepIds) {
-        const orig = originalDeps.find((d) => d.id === depId);
-        if (orig) {
-          try { await saveDependant(orig, encryptionKey); } catch { /* best-effort */ }
-        }
+      for (const orig of strippedOriginals) {
+        // Put back only the private keys the strip removed, onto the record as
+        // it is now, so an edit that landed meanwhile is kept.
+        try {
+          await mutateDependantRecord(orig.id, encryptionKey, cur => cur && restoreDependantPrivateKeys(cur, orig));
+        } catch { /* best-effort */ }
       }
       if (migrationRef.current) {
         const pending = migrationRef.current;
@@ -7986,7 +8020,7 @@ function AppContent() {
     // await, including refs held by older render closures. Failed writes above
     // retain the originals for rollback. This is reference cleanup, not secure
     // erasure of immutable strings or historical storage copies.
-    const removedKeys = clearMigratedKeyReferences(originalIdentity, originalDeps, verifiedTokens);
+    const removedKeys = clearMigratedKeyReferences(originalIdentity, [...originalDeps, ...strippedOriginals], verifiedTokens);
     originalPro = null;
     backendsIdentityId.current = null;
     for (const backend of [backends?.naturalPerson, backends?.persona, proBackend, extraBackend]) {
@@ -15362,7 +15396,9 @@ function AppContent() {
               const synced = await syncPrivateVaultDataset({ ...profiles, ownerPubkey: guardian, encryptionKey: key,
                 relays: syncRelays, isCurrent: current(key), now: Math.floor(Date.now() / 1000) });
               if (synced.state !== 'verified') throw new Error('Their new backup is verified and this device has stopped managing their old identity. The family handover backup is still pending. Unlock and retry to finish syncing it.');
-              await removeDependant(dep.id);
+              // The handed-over child's own install still points at the avatars
+              // this phone uploaded for it: keep every blob.
+              await removeDependant(dep.id, { keepBlobs: true });
               bumpContactsV2();
             };
             // A crash/offline failure after local cutover resumes the durable
@@ -15463,7 +15499,8 @@ function AppContent() {
               // are gone with the record. Best-effort, fire-and-forget
               // semantics inside retractDepProfilesBeforePurge.
               await retractDepProfilesBeforePurge(dep);
-              await removeDependant(depId);
+              // Same as the independence handover: the dependant's own install keeps its pictures.
+              await removeDependant(depId, { keepBlobs: true });
             } catch {
               // Surface via the ceremony's error state — the onComplete
               // caller in TransitionCeremony catches and displays.
@@ -15492,9 +15529,10 @@ function AppContent() {
     onDependantUpdated: async (dep) => {
       const key = encryptionKey || await requestAuth({ purpose: 'manage-dependant', action: 'pair-device', depName: dep.displayName });
       if (!key) throw new Error('Authentication required');
-      const fresh = (await loadFreshDependants(key)).find(d => d.id === dep.id);
-      if (!fresh) throw new Error('Dependant not found');
-      await saveDependant({ ...fresh, bunkerEndpoint: dep.bunkerEndpoint, childDevice: dep.childDevice }, key);
+      await mutateDependantRecord(dep.id, key, fresh => {
+        if (!fresh) throw new Error('Dependant not found');
+        return { ...fresh, bunkerEndpoint: dep.bunkerEndpoint, childDevice: dep.childDevice };
+      });
       await reloadDependants();
     },
     onRulesChanged: () => { void reloadChildRules(); },
@@ -15503,7 +15541,12 @@ function AppContent() {
       if (!key) return null;
       return (await loadFreshDependants(key)).find(d => d.id === id) ?? null;
     },
-    clearChildDevice: async (id) => { await clearChildDevice(id); await reloadDependants(); },
+    clearChildDevice: async (id) => {
+      await clearChildDevice(id);
+      // The phone is unpaired: stop sending it card backdrops and delete what it held. Best effort.
+      await clearDependantBackdrops(id).catch(() => undefined);
+      await reloadDependants();
+    },
     onOpenOperatorImport: () => navigateTo('settings-advanced'),
   } : undefined);
 
@@ -15612,12 +15655,12 @@ function AppContent() {
               // A51: the phone stops offering it too — the rules payload's `personas` drops it.
               const key = encryptionKey || await requestAuth({ purpose: 'manage-dependant', action: 'permissions', depName: dep.displayName });
               if (!key) throw new Error('Authentication required');
-              const fresh = (await loadFreshDependants(key)).find(d => d.id === dep.id);
-              if (fresh?.childDevice) {
+              const saved = await mutateDependantRecord(dep.id, key, fresh => {
+                if (!fresh?.childDevice) return null;
                 const removed = [...new Set([...(fresh.childDevice.removedPersonas ?? []), persona.toLowerCase()])];
-                await saveDependant({ ...fresh, childDevice: { ...fresh.childDevice, removedPersonas: removed } }, key);
-                await reloadDependants();
-              }
+                return { ...fresh, childDevice: { ...fresh.childDevice, removedPersonas: removed } };
+              });
+              if (saved) await reloadDependants();
             }}
             onOpenStage={() => openPersonaAdvanced({ slotTarget: resolveDependantCardSlot(dep).slotTarget, depPubkey: dep.id })}
             onUnpaired={() => navigateBack()}
@@ -16203,25 +16246,38 @@ function AppContent() {
             throw new Error('Enable Blossom uploads in Advanced Settings first.');
           }
           const downscaled = await downscaleAvatar(file, AVATAR_MAX_EDGE_PX, crop);
-          const metadata = await uploadAvatar(downscaled, blossomUrl, blossomConsent, key);
-          const oldAvatar = findSlotBlobs(identity, target).avatar;
-          await setPersonaAvatar(target, metadata);
-          // R3: the replaced avatar goes from the server now that nothing points at it.
-          // Started now, not awaited: the UI is already up to date and a slow server
-          // must not hold the spinner or the share-copy refresh below (M2).
-          const deletion = dropReplacedAvatar(oldAvatar, metadata.hash, key);
+          // Gap 6: newest set/clear on the slot wins; a lock mid-upload saves
+          // nothing and leaves the blob for the next unlock's orphan sweep; the
+          // replaced avatar (read from the record being replaced) is deleted
+          // under the key live at that moment. See `avatar-send.ts`.
+          const res = await setSlotAvatar({
+            slotKey: `owner:${identity?.id ?? ''}:${target}`,
+            encryptionKey: key,
+            getKey: () => encryptionKeyRef.current,
+            upload: () => uploadAvatar(downscaled, blossomUrl, blossomConsent, key),
+            saveSlot: meta => setPersonaAvatar(target, meta),
+            deleteBlob: (domain, hash, server) => deleteOwnBlob(domain, hash, server),
+          });
+          if (!res.ok) return avatarChangeOutcome(res);
           // Keep the contact-share avatar current (only if sharing was already enabled).
           try {
             await pushContactAvatar({ target, plaintext: new Uint8Array(await downscaled.arrayBuffer()), requireExisting: true });
           } catch { /* best-effort — never block the primary avatar set */ }
-          return { deletion };
+          // Started, not awaited: a slow server must not hold the spinner (M2).
+          return { deletion: res.deletion };
         }}
         onClearPersonaAvatar={isPairedChild ? undefined : async (target) => {
           const key = encryptionKey || await requestAuth({ purpose: 'mutate-persona', action: 'remove-avatar' });
           if (!key) throw new Error('Authentication required');
-          const oldAvatar = findSlotBlobs(identity, target).avatar;
-          await clearPersonaAvatar(target);
-          return { deletion: dropReplacedAvatar(oldAvatar, undefined, key) }; // M2: the line shows when the delete lands
+          const res = await clearSlotAvatar({
+            slotKey: `owner:${identity?.id ?? ''}:${target}`,
+            encryptionKey: key,
+            getKey: () => encryptionKeyRef.current,
+            clearSlot: () => clearPersonaAvatar(target),
+            deleteBlob: (domain, hash, server) => deleteOwnBlob(domain, hash, server),
+          });
+          if (!res.ok) return avatarChangeOutcome(res);
+          return { deletion: res.deletion }; // M2: the line shows when the delete lands
         }}
         // Device-local NIP-05 check result — persisted straight to IDB, no
         // auth prompt (mirrors the read-only nature of the check itself;
@@ -16246,25 +16302,36 @@ function AppContent() {
             throw new Error('Enable Blossom uploads in Advanced Settings first.');
           }
           const downscaled = await downscaleAvatar(file, AVATAR_MAX_EDGE_PX, crop);
-          const metadata = await uploadAvatar(downscaled, blossomUrl, blossomConsent, key);
-          const oldAvatar = findSlotBlobs(dependants.find(d => d.id === depPubkey), target).avatar;
-          await setDependantPersonaAvatar(depPubkey, target, metadata);
-          // R3: the replaced avatar goes from the server now that nothing points at it.
-          // Started now, not awaited: the UI is already up to date and a slow server
-          // must not hold the spinner or the share-copy refresh below (M2).
-          const deletion = dropReplacedAvatar(oldAvatar, metadata.hash, key);
+          // Same guards as the owner set above (gap 6). The save reads the
+          // dependant fresh in the dependant write queue, so a backdrop or a
+          // sync that landed during the upload is kept.
+          const res = await setSlotAvatar({
+            slotKey: `${depPubkey}:${target}`,
+            encryptionKey: key,
+            getKey: () => encryptionKeyRef.current,
+            upload: () => uploadAvatar(downscaled, blossomUrl, blossomConsent, key),
+            saveSlot: meta => setDependantPersonaAvatar(depPubkey, target, meta),
+            deleteBlob: (domain, hash, server) => deleteOwnBlob(domain, hash, server),
+          });
+          if (!res.ok) return avatarChangeOutcome(res);
           // Keep the contact-share avatar current (only if sharing was already enabled).
           try {
             await pushContactAvatar({ target, depPubkey, plaintext: new Uint8Array(await downscaled.arrayBuffer()), requireExisting: true });
           } catch { /* best-effort */ }
-          return { deletion };
+          return { deletion: res.deletion };
         }}
         onClearDepPersonaAvatar={async (depPubkey, target) => {
           const key = encryptionKey || await requestAuth({ purpose: 'mutate-persona', action: 'remove-avatar', depName: dependants.find(d => d.id === depPubkey)?.displayName });
           if (!key) throw new Error('Authentication required');
-          const oldAvatar = findSlotBlobs(dependants.find(d => d.id === depPubkey), target).avatar;
-          await clearDependantPersonaAvatar(depPubkey, target);
-          return { deletion: dropReplacedAvatar(oldAvatar, undefined, key) }; // M2: the line shows when the delete lands
+          const res = await clearSlotAvatar({
+            slotKey: `${depPubkey}:${target}`,
+            encryptionKey: key,
+            getKey: () => encryptionKeyRef.current,
+            clearSlot: () => clearDependantPersonaAvatar(depPubkey, target),
+            deleteBlob: (domain, hash, server) => deleteOwnBlob(domain, hash, server),
+          });
+          if (!res.ok) return avatarChangeOutcome(res);
+          return { deletion: res.deletion }; // M2: the line shows when the delete lands
         }}
         onDepNip05Checked={async (depPubkey, target, result, checkedAt) => {
           await setDependantSlotNip05Check(depPubkey, target, { result, checkedAt });

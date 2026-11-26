@@ -74,6 +74,7 @@ import { clearChildRulesCache, loadChildRulesCache, saveChildRulesCache } from '
 import { observeStampedCalls } from '../lib/signing-backend';
 import { childAllowedPersonas } from '../lib/child-bunker';
 import { subscribeEvents } from '../lib/relay-service';
+import { dropGuardianBackdrops, defaultDropGuardianBackdropDeps } from '../lib/guardian-backdrop-sync';
 import {
   childEffectiveApproval, childPressStands, childReadyRows, isApprovalChanged, owedPresses, readySummary, PRESS_CLOCK_SKEW_MS,
   type ChildEffectiveApproval, type ReadyRow, type ReadySummary,
@@ -194,6 +195,8 @@ export function useChildDeviceLink(opts: UseChildDeviceLinkOpts): ChildDeviceLin
     setRules(null);
     const id = recordRef.current?.dependantPubkey;
     if (id) void clearChildRulesCache(id).catch(() => { /* best effort */ });
+    // The guardian can no longer send this phone anything: the pictures it sent go too. The phone's own picks stay.
+    void dropGuardianBackdrops(defaultDropGuardianBackdropDeps()).catch(() => { /* best effort */ });
   }, []);
   useEffect(() => {
     unpairedRef.current = false;

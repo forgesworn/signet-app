@@ -3,7 +3,7 @@ import { generateSecretKey, getPublicKey } from 'nostr-tools/pure';
 import { bytesToHex } from '@noble/hashes/utils.js';
 import type { DependantIdentity, AutonomyStage, ExtraPersona, DependantBunkerEndpoint } from '../types';
 import type { AuditVisibilityOverride } from '../lib/audit-visibility';
-import { getDependants, saveDependant, deleteDependant, deleteGrantsForDependant, loadIdentityDecrypted, deletePublicProfileSignAuthByClient } from '../lib/db';
+import { getDependants, saveDependant, deleteDependant, deleteGrantsForDependant, loadIdentityDecrypted, deletePublicProfileSignAuthByClient, mutateDependant } from '../lib/db';
 import { deriveDependantIdentity, importFromMnemonic, deriveExtraPersona } from '../lib/signet';
 import { liftDependantPublicProfileConfig } from '../lib/lift-public-profile-config';
 import { liftDependantNaturalPersonActive } from '../lib/lift-natural-person-active';
@@ -18,9 +18,53 @@ import { nextDependantPersonaName, dependantPersonaTombstones, applyDependantPer
 import { createSerialQueue } from '../lib/contacts-v2-queue';
 import { listIndependenceArchives } from '../lib/independence-store';
 import { sanitizeDisplayName } from '../lib/text-sanitize';
+import { supersedeBackdropSends } from '../lib/backdrop-send';
+import { collectSlotBlobsToDelete, deleteRemovedBlobs, type BlobDeleter, type SlotBlobToDelete } from '../lib/blob-deletion';
 
 // Serialize allocation/deletion across hook instances in this app.
 const personaMutations = createSerialQueue();
+
+type SlotTarget = 'natural-person' | 'persona' | string;
+type SlotPatch = Partial<ExtraPersona>;
+
+/** `dep` with `patch` applied to the slot `target` (NP, persona, or an extra's pubkey). */
+function patchSlot(dep: DependantIdentity, target: SlotTarget, patch: SlotPatch | ((slot: Partial<ExtraPersona>) => SlotPatch)): DependantIdentity {
+  const apply = <S extends object>(slot: S): S => ({ ...slot, ...(typeof patch === 'function' ? patch(slot as Partial<ExtraPersona>) : patch) });
+  if (target === 'natural-person') return { ...dep, naturalPerson: apply(dep.naturalPerson) };
+  if (target === 'persona') return { ...dep, persona: apply(dep.persona) };
+  return { ...dep, extraPersonas: (dep.extraPersonas ?? []).map(p => (p.publicKey === target ? apply(p) : p)) };
+}
+
+/** The slot `target` of `dep`, or undefined when it has no such slot. */
+function findSlot(dep: DependantIdentity, target: SlotTarget): Partial<ExtraPersona> | undefined {
+  if (target === 'natural-person') return dep.naturalPerson;
+  if (target === 'persona') return dep.persona;
+  return (dep.extraPersonas ?? []).find(p => p.publicKey === target);
+}
+
+const NO_BACKDROP = { backdropHash: undefined, backdropBlossomUrl: undefined, backdropKey: undefined, backdropUpdatedAt: undefined, backdropSentDigest: undefined };
+
+/** The slot targets of a dependant as the backdrop lookup keys them. */
+function slotTargetsOf(dep: DependantIdentity): string[] {
+  return ['natural-person', 'persona', ...(dep.extraPersonas ?? []).map(p => p.publicKey)];
+}
+
+/** Whether a slot names any part of a sent backdrop. */
+function slotHasBackdrop(slot: Partial<ExtraPersona>): boolean {
+  return !!(slot.backdropHash || slot.backdropBlossomUrl || slot.backdropKey || slot.backdropSentDigest || slot.backdropUpdatedAt);
+}
+
+/** `dep` with every slot's sent-backdrop pointer cleared (null when none names one). The local `backdrop:` rows are not touched. */
+function withoutBackdropPointers(dep: DependantIdentity): DependantIdentity | null {
+  const slots: Array<Partial<ExtraPersona>> = [dep.naturalPerson, dep.persona, ...(dep.extraPersonas ?? [])];
+  if (!slots.some(slotHasBackdrop)) return null;
+  return {
+    ...dep,
+    naturalPerson: { ...dep.naturalPerson, ...NO_BACKDROP },
+    persona: { ...dep.persona, ...NO_BACKDROP },
+    extraPersonas: dep.extraPersonas?.map(p => ({ ...p, ...NO_BACKDROP })),
+  };
+}
 
 /**
  * Bunker-mode dependant creation (family-bunker §11.1.8 D4). When supplied,
@@ -49,6 +93,13 @@ export function useDependants(
    */
   guardianIdentityId?: string,
   encryptionKey?: string | null,
+  options?: {
+    /**
+     * Deletes one of this install's Blossom blobs (App's `deleteOwnBlob`: R1
+     * is enforced there). Without it, removal and unpair leave blobs alone.
+     */
+    deleteBlob?: BlobDeleter;
+  },
 ) {
   /**
    * Fresh-decrypt the guardian identity from IDB for the caller's key.
@@ -78,6 +129,36 @@ export function useDependants(
   // state AFTER the lock cleared them. Compare against this before writing.
   const liveKeyRef = useRef(encryptionKey);
   useEffect(() => { liveKeyRef.current = encryptionKey; }, [encryptionKey]);
+  const deleteBlobRef = useRef(options?.deleteBlob);
+  deleteBlobRef.current = options?.deleteBlob;
+
+  /**
+   * Delete blobs whose slot just left the stored record (removal, unpair).
+   * Starts at once and settles when done; never throws and never fails the
+   * change that called it. Locked or unreachable: recorded as orphans.
+   */
+  const deleteGoneBlobs = useCallback((blobs: readonly SlotBlobToDelete[]): Promise<void> => {
+    const deleteBlob = deleteBlobRef.current;
+    if (blobs.length === 0 || !deleteBlob) return Promise.resolve();
+    return deleteRemovedBlobs(blobs, { deleteBlob, isLive: () => !!liveKeyRef.current });
+  }, []);
+
+  /**
+   * Change one dependant record through the serialised fresh-read writer
+   * (`db.mutateDependant`): `fn` gets the record as stored NOW (lifted the same
+   * way `loadDependants` lifts it), never the `dependants` snapshot this
+   * closure holds, so a sync merge or another setter that landed meanwhile is
+   * kept. `fn(null)` = no such dependant; return null to write nothing. `fn`
+   * must not write a dependant itself.
+   */
+  const mutate = useCallback((
+    depId: string,
+    key: string,
+    fn: (dep: DependantIdentity | null) => DependantIdentity | null,
+  ): Promise<DependantIdentity | null> => {
+    if (!guardianPubkey) return Promise.resolve(null);
+    return mutateDependant(guardianPubkey, depId, key, cur => fn(cur ? liftDependantNaturalPersonActive(cur) : null));
+  }, [guardianPubkey]);
 
   /**
    * Shared lift + sort step used by both effect-driven `loadDependants`
@@ -109,11 +190,19 @@ export function useDependants(
       setLoadedWithKey(false);
       return;
     }
-    const results = await getDependants(guardianPubkey, encryptionKey ?? undefined);
+    // Read under the key that is live NOW, not the one this callback closed over:
+    // a writer that awaited an unlock (requestAuth) reloads through an older
+    // closure, and must still see its own write.
+    const key = liveKeyRef.current ?? null;
+    const results = await getDependants(guardianPubkey, key ?? undefined);
+    // A read made under a key that is no longer the live one (a lock, or another
+    // unlock, landed while it ran) must not reach state: the lock effect owns it
+    // now, and a late write's reload would put decrypted records back while locked.
+    if ((liveKeyRef.current ?? null) !== key) return;
     setDependants(migrateAndSort(results));
     setLoading(false);
     // Only the newest read speaks for the key: an older one finishing late must not.
-    if (seq === loadSeqRef.current) setLoadedWithKey(!!encryptionKey);
+    if (seq === loadSeqRef.current) setLoadedWithKey(!!key);
   }, [guardianPubkey, encryptionKey, migrateAndSort]);
 
   useEffect(() => {
@@ -217,7 +306,18 @@ export function useDependants(
     return dep;
   }, [guardianPubkey, encryptionKey, loadDependants]);
 
-  const removeDependant = useCallback(async (pubkey: string) => {
+  const removeDependant = useCallback(async (
+    pubkey: string,
+    opts?: {
+      /**
+       * Leave the avatar and backdrop blobs on the server. The independence
+       * handover sets it: the handed-over child's own install still points at
+       * the avatars the guardian uploaded (its inventory merge copied them onto
+       * its slots), so deleting them would blank the child's pictures.
+       */
+      keepBlobs?: boolean;
+    },
+  ): Promise<{ deletion: Promise<void> }> => {
     // Clear grants + identity together. Dependant pubkeys are derived
     // deterministically from the guardian mnemonic + index (see
     // `deriveDependantIdentity`) — re-adding a dependant at the same index
@@ -230,7 +330,17 @@ export function useDependants(
     // paired-child cache for this dep. Re-adding the dep at the same index
     // would otherwise re-attach to leftover pre-auth grants for personas
     // whose keypairs may or may not be the same after re-derive.
-    const dep = dependants.find(d => d.id === pubkey);
+    let dep = dependants.find(d => d.id === pubkey);
+    // The blobs to delete are read from the record as stored NOW (a sync or an
+    // avatar change may have landed since the snapshot), before it is deleted.
+    if (!opts?.keepBlobs) {
+      const key = liveKeyRef.current;
+      if (key) {
+        try {
+          await mutate(pubkey, key, fresh => { if (fresh) dep = fresh; return null; });
+        } catch { /* fall back to the snapshot */ }
+      }
+    }
     if (dep) {
       try {
         const dbMod = await import('../lib/db');
@@ -245,7 +355,10 @@ export function useDependants(
       }
     }
     await deleteGrantsForDependant(pubkey);
-    await deleteDependant(pubkey);
+    // The row is read again inside the deleting step: a picture saved since the
+    // read above points at a blob only this read knows about.
+    const removed = await deleteDependant(pubkey, opts?.keepBlobs ? undefined : liveKeyRef.current ?? undefined);
+    if (removed) dep = removed;
     // Device-local card backdrops for every key the dependant could show a
     // card for (the dependant row's own key, its default persona, its extras).
     if (dep) {
@@ -257,17 +370,18 @@ export function useDependants(
       ]);
       for (const key of keys) await forgetCardBackdrop(key);
     }
+    // The record is gone, so nothing stored points at its blobs any more (R1
+    // is still checked by the deleter against every other row).
+    const deletion = opts?.keepBlobs ? Promise.resolve() : deleteGoneBlobs(collectSlotBlobsToDelete(dep, ['avatar', 'backdrop']));
     await loadDependants();
-  }, [dependants, loadDependants]);
+    return { deletion };
+  }, [dependants, loadDependants, mutate, deleteGoneBlobs]);
 
   const updateAutonomyStage = useCallback(async (pubkey: string, stage: AutonomyStage) => {
     if (!encryptionKey) throw new Error('Encryption key required');
-    const dep = dependants.find(d => d.id === pubkey);
-    if (!dep) return;
-    const updated = { ...dep, autonomyStage: stage };
-    await saveDependant(updated, encryptionKey);
+    await mutate(pubkey, encryptionKey, dep => dep && { ...dep, autonomyStage: stage });
     await loadDependants();
-  }, [dependants, encryptionKey, loadDependants]);
+  }, [mutate, encryptionKey, loadDependants]);
 
   /**
    * Set (or replace) the avatar for one of a dependant's persona slots
@@ -278,59 +392,38 @@ export function useDependants(
    * keypair `privateKey`.
    *
    * Mirrors `useIdentity.setPersonaAvatar` but for the guardian's
-   * deps. Reads the dep fresh from the React-state `dependants` array
-   * rather than re-decrypting from IDB — the caller is the guardian
-   * (always unlocked when invoked) and the array is the live source
-   * of truth.
+   * deps. Reads the dep fresh in the dependant write queue (an upload takes
+   * seconds; the `dependants` snapshot may predate a sync or a backdrop save).
+   * Resolves with the avatar the slot held BEFORE, read from that same record,
+   * so the caller deletes the right blob. Throws (saves nothing) when the key
+   * is no longer live or the dependant or slot is gone.
    */
   const setDependantPersonaAvatar = useCallback(async (
     depPubkey: string,
-    target: 'natural-person' | 'persona' | string,
+    target: SlotTarget,
     avatar: { hash: string; blossomUrl: string; keyHex: string; updatedAt: number },
-  ) => {
+  ): Promise<{ previous?: { hash: string; server: string } }> => {
     if (!encryptionKey) throw new Error('Encryption key required');
-    const dep = dependants.find(d => d.id === depPubkey);
-    if (!dep) return;
-    let updated: DependantIdentity;
-    if (target === 'natural-person') {
-      updated = {
-        ...dep,
-        naturalPerson: {
-          ...dep.naturalPerson,
-          avatarHash: avatar.hash,
-          avatarBlossomUrl: avatar.blossomUrl,
-          avatarKey: avatar.keyHex,
-          avatarUpdatedAt: avatar.updatedAt,
-        },
-      };
-    } else if (target === 'persona') {
-      updated = {
-        ...dep,
-        persona: {
-          ...dep.persona,
-          avatarHash: avatar.hash,
-          avatarBlossomUrl: avatar.blossomUrl,
-          avatarKey: avatar.keyHex,
-          avatarUpdatedAt: avatar.updatedAt,
-        },
-      };
-    } else {
-      const extras = (dep.extraPersonas ?? []).map(p =>
-        p.publicKey === target
-          ? {
-              ...p,
-              avatarHash: avatar.hash,
-              avatarBlossomUrl: avatar.blossomUrl,
-              avatarKey: avatar.keyHex,
-              avatarUpdatedAt: avatar.updatedAt,
-            }
-          : p,
-      );
-      updated = { ...dep, extraPersonas: extras };
-    }
-    await saveDependant(updated, encryptionKey);
-    await loadDependants();
-  }, [dependants, encryptionKey, loadDependants]);
+    if (!guardianPubkey) throw new Error('No guardian identity');
+    let previous: { hash: string; server: string } | undefined;
+    await mutate(depPubkey, encryptionKey, dep => {
+      if (!dep) throw new Error('Dependant not found');
+      const slot = findSlot(dep, target);
+      if (!slot) throw new Error('Persona not found');
+      // Locked while waiting for the write queue: save nothing.
+      if (liveKeyRef.current !== encryptionKey) throw new Error('Encryption key required');
+      previous = slot.avatarHash && slot.avatarBlossomUrl ? { hash: slot.avatarHash, server: slot.avatarBlossomUrl } : undefined;
+      return patchSlot(dep, target, {
+        avatarHash: avatar.hash,
+        avatarBlossomUrl: avatar.blossomUrl,
+        avatarKey: avatar.keyHex,
+        avatarUpdatedAt: avatar.updatedAt,
+      });
+    });
+    // Locked while saving: the lock effect owns state now; do not reload into it.
+    if (liveKeyRef.current === encryptionKey) await loadDependants();
+    return { previous };
+  }, [mutate, guardianPubkey, encryptionKey, loadDependants]);
 
   /**
    * Guardian-side write of a dep persona's public-profile config + state.
@@ -358,8 +451,6 @@ export function useDependants(
     base?: import('../types').PublicProfileBase | null,
   ) => {
     if (!encryptionKey) throw new Error('Encryption key required');
-    const dep = dependants.find(d => d.id === depPubkey);
-    if (!dep) return;
 
     // Build slot-config patch — explicit undefined for each key to ensure
     // spread replaces existing values cleanly (matches partial-config =
@@ -399,22 +490,20 @@ export function useDependants(
       return cfgPatch.nip05 === prevNip05 ? {} : { nip05CheckResult: undefined, nip05CheckedAt: undefined };
     }
 
-    let updated: DependantIdentity;
-    let personaPubkey: string;
-    if (target === 'natural-person') {
-      updated = { ...dep, naturalPerson: { ...dep.naturalPerson, ...cfgPatch, ...nip05CheckClear(dep.naturalPerson.nip05), publicProfile: ppValue, publicProfileBase: resolvePublicProfileBase(dep.naturalPerson.publicProfileBase, base, ppValue) } };
-      personaPubkey = dep.naturalPerson.publicKey;
-    } else if (target === 'persona') {
-      updated = { ...dep, persona: { ...dep.persona, ...cfgPatch, ...nip05CheckClear(dep.persona.nip05), publicProfile: ppValue, publicProfileBase: resolvePublicProfileBase(dep.persona.publicProfileBase, base, ppValue) } };
-      personaPubkey = dep.persona.publicKey;
-    } else {
-      const extras = (dep.extraPersonas ?? []).map(p =>
-        p.publicKey === target ? { ...p, ...cfgPatch, ...nip05CheckClear(p.nip05), publicProfile: ppValue, publicProfileBase: resolvePublicProfileBase(p.publicProfileBase, base, ppValue) } : p,
-      );
-      updated = { ...dep, extraPersonas: extras };
-      personaPubkey = target;
-    }
-    await saveDependant(updated, encryptionKey);
+    let personaPubkey = '';
+    const saved = await mutate(depPubkey, encryptionKey, dep => {
+      if (!dep) return null;
+      personaPubkey = target === 'natural-person' ? dep.naturalPerson.publicKey
+        : target === 'persona' ? dep.persona.publicKey
+        : target;
+      return patchSlot(dep, target, slot => ({
+        ...cfgPatch,
+        ...nip05CheckClear(slot.nip05),
+        publicProfile: ppValue,
+        publicProfileBase: resolvePublicProfileBase(slot.publicProfileBase, base, ppValue),
+      }));
+    });
+    if (!saved) return;
 
     // §5.4.1 pre-auth provisioning. When the guardian enables a dep's
     // publicProfile AND there's a paired kid client, save (refresh) the
@@ -454,13 +543,13 @@ export function useDependants(
         const dbMod = await import('../lib/db');
         if (state?.enabled === true) {
           await Promise.all([
-            dbMod.savePublicProfileSignAuth(dep.id, personaPubkey, kidClientPubkey, 0),
-            dbMod.savePublicProfileSignAuth(dep.id, personaPubkey, kidClientPubkey, 5),
+            dbMod.savePublicProfileSignAuth(depPubkey, personaPubkey, kidClientPubkey, 0),
+            dbMod.savePublicProfileSignAuth(depPubkey, personaPubkey, kidClientPubkey, 5),
           ]);
         } else {
           await Promise.all([
-            dbMod.deletePublicProfileSignAuth(dep.id, personaPubkey, kidClientPubkey, 0),
-            dbMod.deletePublicProfileSignAuth(dep.id, personaPubkey, kidClientPubkey, 5),
+            dbMod.deletePublicProfileSignAuth(depPubkey, personaPubkey, kidClientPubkey, 0),
+            dbMod.deletePublicProfileSignAuth(depPubkey, personaPubkey, kidClientPubkey, 5),
           ]);
         }
       } catch {
@@ -471,7 +560,7 @@ export function useDependants(
     }
 
     await loadDependants();
-  }, [dependants, encryptionKey, guardianPubkey, loadDependants]);
+  }, [mutate, encryptionKey, guardianPubkey, loadDependants]);
 
   /** Clear dep persona public-profile config. */
   const clearDependantPersonaPublicProfile = useCallback(async (
@@ -479,53 +568,37 @@ export function useDependants(
     target: 'natural-person' | 'persona' | string,
   ) => {
     if (!encryptionKey) throw new Error('Encryption key required');
-    const dep = dependants.find(d => d.id === depPubkey);
-    if (!dep) return;
-    let updated: DependantIdentity;
-    if (target === 'natural-person') {
-      updated = { ...dep, naturalPerson: { ...dep.naturalPerson, publicProfile: undefined, publicProfileBase: undefined } };
-    } else if (target === 'persona') {
-      updated = { ...dep, persona: { ...dep.persona, publicProfile: undefined, publicProfileBase: undefined } };
-    } else {
-      const extras = (dep.extraPersonas ?? []).map(p =>
-        p.publicKey === target ? { ...p, publicProfile: undefined, publicProfileBase: undefined } : p,
-      );
-      updated = { ...dep, extraPersonas: extras };
-    }
-    await saveDependant(updated, encryptionKey);
+    await mutate(depPubkey, encryptionKey, dep => dep && patchSlot(dep, target, { publicProfile: undefined, publicProfileBase: undefined }));
     await loadDependants();
-  }, [dependants, encryptionKey, loadDependants]);
+  }, [mutate, encryptionKey, loadDependants]);
 
   /** Remove avatar metadata from a dep persona slot. This only clears the
    *  record: the caller (App.tsx) deletes the old blob from Blossom afterwards
    *  (`blob-deletion.ts`, R3). */
   const clearDependantPersonaAvatar = useCallback(async (
     depPubkey: string,
-    target: 'natural-person' | 'persona' | string,
-  ) => {
+    target: SlotTarget,
+  ): Promise<{ previous?: { hash: string; server: string } }> => {
     if (!encryptionKey) throw new Error('Encryption key required');
-    const dep = dependants.find(d => d.id === depPubkey);
-    if (!dep) return;
-    const cleared = {
-      avatarHash: undefined,
-      avatarBlossomUrl: undefined,
-      avatarKey: undefined,
-      avatarUpdatedAt: undefined,
-    };
-    let updated: DependantIdentity;
-    if (target === 'natural-person') {
-      updated = { ...dep, naturalPerson: { ...dep.naturalPerson, ...cleared } };
-    } else if (target === 'persona') {
-      updated = { ...dep, persona: { ...dep.persona, ...cleared } };
-    } else {
-      const extras = (dep.extraPersonas ?? []).map(p =>
-        p.publicKey === target ? { ...p, ...cleared } : p,
-      );
-      updated = { ...dep, extraPersonas: extras };
-    }
-    await saveDependant(updated, encryptionKey);
-    await loadDependants();
-  }, [dependants, encryptionKey, loadDependants]);
+    if (!guardianPubkey) throw new Error('No guardian identity');
+    let previous: { hash: string; server: string } | undefined;
+    await mutate(depPubkey, encryptionKey, dep => {
+      if (!dep) throw new Error('Dependant not found');
+      const slot = findSlot(dep, target);
+      if (!slot) throw new Error('Persona not found');
+      if (liveKeyRef.current !== encryptionKey) throw new Error('Encryption key required');
+      previous = slot.avatarHash && slot.avatarBlossomUrl ? { hash: slot.avatarHash, server: slot.avatarBlossomUrl } : undefined;
+      if (!previous && !slot.avatarKey) return null;
+      return patchSlot(dep, target, {
+        avatarHash: undefined,
+        avatarBlossomUrl: undefined,
+        avatarKey: undefined,
+        avatarUpdatedAt: undefined,
+      });
+    });
+    if (liveKeyRef.current === encryptionKey) await loadDependants();
+    return { previous };
+  }, [mutate, guardianPubkey, encryptionKey, loadDependants]);
 
   /**
    * Set (or replace) the contact-card avatar for one of a dependant's persona
@@ -550,9 +623,6 @@ export function useDependants(
   ) => {
     if (!encryptionKey) throw new Error('Encryption key required');
     if (!guardianPubkey) return;
-    const all = await getDependants(guardianPubkey, encryptionKey);
-    const dep = all.find(d => d.id === depPubkey);
-    if (!dep) return;
     const patch = {
       contactAvatarKey: contact.contactAvatarKey,
       contactAvatarHash: contact.contactAvatarHash,
@@ -560,20 +630,9 @@ export function useDependants(
       contactAvatarUpdatedAt: contact.contactAvatarUpdatedAt,
       contactAvatarStale: contact.contactAvatarStale,
     };
-    let updated: DependantIdentity;
-    if (target === 'natural-person') {
-      updated = { ...dep, naturalPerson: { ...dep.naturalPerson, ...patch } };
-    } else if (target === 'persona') {
-      updated = { ...dep, persona: { ...dep.persona, ...patch } };
-    } else {
-      const extras = (dep.extraPersonas ?? []).map(p =>
-        p.publicKey === target ? { ...p, ...patch } : p,
-      );
-      updated = { ...dep, extraPersonas: extras };
-    }
-    await saveDependant(updated, encryptionKey);
+    await mutate(depPubkey, encryptionKey, dep => dep && patchSlot(dep, target, patch));
     await loadDependants();
-  }, [guardianPubkey, encryptionKey, loadDependants]);
+  }, [mutate, guardianPubkey, encryptionKey, loadDependants]);
 
   /**
    * Set (or, with `null`, clear) the encrypted copy of a card backdrop that the
@@ -592,38 +651,43 @@ export function useDependants(
     depPubkey: string,
     target: 'natural-person' | 'persona' | string,
     backdrop: { hash: string; blossomUrl: string; keyHex: string; updatedAt: number; sentDigest?: string } | null,
+    opts?: {
+      /**
+       * Asked INSIDE the write queue, once the record is read: false means a
+       * newer change (an unpair, a remove) outranked this save while it waited,
+       * so nothing is written.
+       */
+      stillCurrent?: () => boolean;
+    },
   ): Promise<{ previous?: { hash: string; server: string } }> => {
     if (!encryptionKey) throw new Error('Encryption key required');
     if (!guardianPubkey) throw new Error('No guardian identity');
-    const all = await getDependants(guardianPubkey, encryptionKey);
-    const dep = all.find(d => d.id === depPubkey);
-    if (!dep) throw new Error('Dependant not found');
-    const slot = target === 'natural-person' ? dep.naturalPerson
-      : target === 'persona' ? dep.persona
-      : (dep.extraPersonas ?? []).find(p => p.publicKey === target);
-    if (!slot) throw new Error('Persona not found');
-    if (liveKeyRef.current !== encryptionKey) throw new Error('Encryption key required');
-    const previous = slot.backdropHash && slot.backdropBlossomUrl
-      ? { hash: slot.backdropHash, server: slot.backdropBlossomUrl }
-      : undefined;
-    // Clearing a slot that names nothing has nothing to save.
-    if (!backdrop && !previous && !slot.backdropKey && !slot.backdropSentDigest) return {};
-    const patch = backdrop
-      ? { backdropHash: backdrop.hash, backdropBlossomUrl: backdrop.blossomUrl, backdropKey: backdrop.keyHex, backdropUpdatedAt: backdrop.updatedAt, backdropSentDigest: backdrop.sentDigest }
-      : { backdropHash: undefined, backdropBlossomUrl: undefined, backdropKey: undefined, backdropUpdatedAt: undefined, backdropSentDigest: undefined };
-    let updated: DependantIdentity;
-    if (target === 'natural-person') {
-      updated = { ...dep, naturalPerson: { ...dep.naturalPerson, ...patch } };
-    } else if (target === 'persona') {
-      updated = { ...dep, persona: { ...dep.persona, ...patch } };
-    } else {
-      updated = { ...dep, extraPersonas: (dep.extraPersonas ?? []).map(p => (p.publicKey === target ? { ...p, ...patch } : p)) };
-    }
-    await saveDependant(updated, encryptionKey);
+    let previous: { hash: string; server: string } | undefined;
+    await mutate(depPubkey, encryptionKey, dep => {
+      if (!dep) throw new Error('Dependant not found');
+      const slot = findSlot(dep, target);
+      if (!slot) throw new Error('Persona not found');
+      // Checked after the write queue's wait: a lock during it saves nothing.
+      if (liveKeyRef.current !== encryptionKey) throw new Error('Encryption key required');
+      if (backdrop) {
+        // An unpair or a newer change ran while this save waited its turn: a
+        // pointer written now would outlive the phone it was sent for.
+        if (opts?.stillCurrent && !opts.stillCurrent()) throw new Error('Superseded');
+        if (!dep.bunkerEndpoint?.authorizedClientPubkey) throw new Error('No phone paired');
+      }
+      previous = slot.backdropHash && slot.backdropBlossomUrl
+        ? { hash: slot.backdropHash, server: slot.backdropBlossomUrl }
+        : undefined;
+      // Clearing a slot that names nothing has nothing to save.
+      if (!backdrop && !previous && !slot.backdropKey && !slot.backdropSentDigest) return null;
+      return patchSlot(dep, target, backdrop
+        ? { backdropHash: backdrop.hash, backdropBlossomUrl: backdrop.blossomUrl, backdropKey: backdrop.keyHex, backdropUpdatedAt: backdrop.updatedAt, backdropSentDigest: backdrop.sentDigest }
+        : { backdropHash: undefined, backdropBlossomUrl: undefined, backdropKey: undefined, backdropUpdatedAt: undefined, backdropSentDigest: undefined });
+    });
     // Locked while saving: the lock effect owns state now; do not reload into it.
     if (liveKeyRef.current === encryptionKey) await loadDependants();
     return { previous };
-  }, [guardianPubkey, encryptionKey, loadDependants]);
+  }, [mutate, guardianPubkey, encryptionKey, loadDependants]);
 
   /** Remove contact-card avatar metadata from a dep persona slot. This only
    *  clears the record: Stop sharing (App.tsx) deletes the share blob (R5).
@@ -635,9 +699,6 @@ export function useDependants(
   ) => {
     if (!encryptionKey) throw new Error('Encryption key required');
     if (!guardianPubkey) return;
-    const all = await getDependants(guardianPubkey, encryptionKey);
-    const dep = all.find(d => d.id === depPubkey);
-    if (!dep) return;
     const patch = {
       contactAvatarKey: undefined,
       contactAvatarHash: undefined,
@@ -645,20 +706,9 @@ export function useDependants(
       contactAvatarUpdatedAt: undefined,
       contactAvatarStale: undefined,
     };
-    let updated: DependantIdentity;
-    if (target === 'natural-person') {
-      updated = { ...dep, naturalPerson: { ...dep.naturalPerson, ...patch } };
-    } else if (target === 'persona') {
-      updated = { ...dep, persona: { ...dep.persona, ...patch } };
-    } else {
-      const extras = (dep.extraPersonas ?? []).map(p =>
-        p.publicKey === target ? { ...p, ...patch } : p,
-      );
-      updated = { ...dep, extraPersonas: extras };
-    }
-    await saveDependant(updated, encryptionKey);
+    await mutate(depPubkey, encryptionKey, dep => dep && patchSlot(dep, target, patch));
     await loadDependants();
-  }, [guardianPubkey, encryptionKey, loadDependants]);
+  }, [mutate, guardianPubkey, encryptionKey, loadDependants]);
 
   /**
    * Persist a NIP-05 check result for one of a dependant's persona slots.
@@ -673,24 +723,10 @@ export function useDependants(
   ) => {
     if (!encryptionKey) throw new Error('Encryption key required');
     if (!guardianPubkey) return;
-    const all = await getDependants(guardianPubkey, encryptionKey);
-    const dep = all.find(d => d.id === depPubkey);
-    if (!dep) return;
     const patch = { nip05CheckResult: check.result, nip05CheckedAt: check.checkedAt };
-    let updated: DependantIdentity;
-    if (target === 'natural-person') {
-      updated = { ...dep, naturalPerson: { ...dep.naturalPerson, ...patch } };
-    } else if (target === 'persona') {
-      updated = { ...dep, persona: { ...dep.persona, ...patch } };
-    } else {
-      const extras = (dep.extraPersonas ?? []).map(p =>
-        p.publicKey === target ? { ...p, ...patch } : p,
-      );
-      updated = { ...dep, extraPersonas: extras };
-    }
-    await saveDependant(updated, encryptionKey);
+    await mutate(depPubkey, encryptionKey, dep => dep && patchSlot(dep, target, patch));
     await loadDependants();
-  }, [guardianPubkey, encryptionKey, loadDependants]);
+  }, [mutate, guardianPubkey, encryptionKey, loadDependants]);
 
   /**
    * Per-dep audit-visibility override (v2).
@@ -705,12 +741,9 @@ export function useDependants(
     override: AuditVisibilityOverride,
   ) => {
     if (!encryptionKey) throw new Error('Encryption key required');
-    const dep = dependants.find(d => d.id === pubkey);
-    if (!dep) return;
-    const updated: DependantIdentity = { ...dep, auditVisibility: override };
-    await saveDependant(updated, encryptionKey);
+    await mutate(pubkey, encryptionKey, dep => dep && { ...dep, auditVisibility: override });
     await loadDependants();
-  }, [dependants, encryptionKey, loadDependants]);
+  }, [mutate, encryptionKey, loadDependants]);
 
   /**
    * Guardian opt-in for C4 petitions on device auto-deny (family-bunker
@@ -723,12 +756,9 @@ export function useDependants(
     on: boolean,
   ) => {
     if (!encryptionKey) throw new Error('Encryption key required');
-    const dep = dependants.find(d => d.id === pubkey);
-    if (!dep) return;
-    const updated: DependantIdentity = { ...dep, petitionOnDeny: on };
-    await saveDependant(updated, encryptionKey);
+    await mutate(pubkey, encryptionKey, dep => dep && { ...dep, petitionOnDeny: on });
     await loadDependants();
-  }, [dependants, encryptionKey, loadDependants]);
+  }, [mutate, encryptionKey, loadDependants]);
 
   /**
    * Update photo metadata on a dependant. Photo fields are device-local
@@ -743,33 +773,27 @@ export function useDependants(
     photoKey: string,
   ) => {
     if (!encryptionKey) throw new Error('Encryption key required');
-    const dep = dependants.find(d => d.id === pubkey);
-    if (!dep) return;
-    const updated: DependantIdentity = {
+    await mutate(pubkey, encryptionKey, dep => dep && {
       ...dep,
       photoHash,
       blossomUrl,
       photoKey,
       photoUpdatedAt: Math.floor(Date.now() / 1000),
-    };
-    await saveDependant(updated, encryptionKey);
+    });
     await loadDependants();
-  }, [dependants, encryptionKey, loadDependants]);
+  }, [mutate, encryptionKey, loadDependants]);
 
   const updateDependantName = useCallback(async (pubkey: string, displayName: string) => {
     if (!encryptionKey) throw new Error('Encryption key required');
-    const dep = dependants.find(d => d.id === pubkey);
-    if (!dep) return;
     // The top-level label is the guardian-private family label. It may also be
     // the NP's display name — but ONLY for an already-active real identity.
     // Writing it onto a dormant slot would name the real identity behind the
     // guardian's back and (pre-lift records aside) flip it active.
-    const updated = isDependantNaturalPersonActive(dep)
+    await mutate(pubkey, encryptionKey, dep => dep && (isDependantNaturalPersonActive(dep)
       ? { ...dep, displayName, naturalPerson: { ...dep.naturalPerson, displayName } }
-      : { ...dep, displayName };
-    await saveDependant(updated, encryptionKey);
+      : { ...dep, displayName }));
     await loadDependants();
-  }, [dependants, encryptionKey, loadDependants]);
+  }, [mutate, encryptionKey, loadDependants]);
 
   /**
    * Reorder dependants in the carousel parent ring. Writes a sortIndex
@@ -780,27 +804,21 @@ export function useDependants(
    */
   const reorderDependants = useCallback(async (orderedIds: string[]) => {
     if (!encryptionKey) throw new Error('Encryption key required');
-    const byId = new Map(dependants.map(d => [d.id, d]));
     let nextIdx = 0;
     for (const id of orderedIds) {
-      const dep = byId.get(id);
-      if (!dep) continue;
-      const updated = { ...dep, sortIndex: nextIdx };
-      await saveDependant(updated, encryptionKey);
-      nextIdx++;
+      const idx = nextIdx;
+      const saved = await mutate(id, encryptionKey, dep => dep && { ...dep, sortIndex: idx });
+      if (saved) nextIdx++;
     }
     await loadDependants();
-  }, [dependants, encryptionKey, loadDependants]);
+  }, [mutate, encryptionKey, loadDependants]);
 
   const switchDependantPrimary = useCallback(async (pubkey: string, keypair: string, overrideEncryptionKey?: string) => {
     const key = overrideEncryptionKey || encryptionKey;
     if (!key) throw new Error('Encryption key required');
-    const dep = dependants.find(d => d.id === pubkey);
-    if (!dep) return;
-    const updated = { ...dep, primaryKeypair: keypair };
-    await saveDependant(updated, key);
+    await mutate(pubkey, key, dep => dep && { ...dep, primaryKeypair: keypair });
     await loadDependants();
-  }, [dependants, encryptionKey, loadDependants]);
+  }, [mutate, encryptionKey, loadDependants]);
 
   const updateDependantPersonaName = useCallback(async (
     pubkey: string,
@@ -810,24 +828,9 @@ export function useDependants(
   ) => {
     const key = overrideEncryptionKey || encryptionKey;
     if (!key) throw new Error('Encryption key required');
-    const dep = dependants.find(d => d.id === pubkey);
-    if (!dep) return;
-
-    let updated: DependantIdentity;
-    if (target === 'natural-person') {
-      updated = { ...dep, naturalPerson: { ...dep.naturalPerson, displayName: name } };
-    } else if (target === 'persona') {
-      updated = { ...dep, persona: { ...dep.persona, displayName: name } };
-    } else {
-      const extras = (dep.extraPersonas ?? []).map(p =>
-        p.publicKey === target ? { ...p, displayName: name } : p,
-      );
-      updated = { ...dep, extraPersonas: extras };
-    }
-
-    await saveDependant(updated, key);
+    await mutate(pubkey, key, dep => dep && patchSlot(dep, target, { displayName: name }));
     await loadDependants();
-  }, [dependants, encryptionKey, loadDependants]);
+  }, [mutate, encryptionKey, loadDependants]);
 
   /**
    * Activate a dependant's real identity (spec §7.6). Writes ONLY the legal
@@ -845,19 +848,19 @@ export function useDependants(
     if (!key) throw new Error('Encryption key required');
     const name = sanitizeDisplayName(legalName, 100);
     if (!name) throw new Error('Enter their legal name');
-    const fresh = await loadFreshDependants(key);
-    const dep = fresh.find(d => d.id === depId);
-    if (!dep) throw new Error('Dependant not found');
-    if (!dep.naturalPerson.publicKey) {
-      throw new Error('This dependant has no real-name key.');
-    }
-    await saveDependant({
-      ...dep,
-      naturalPerson: { ...dep.naturalPerson, displayName: name },
-      naturalPersonActive: true,
-    }, key);
+    await mutate(depId, key, dep => {
+      if (!dep) throw new Error('Dependant not found');
+      if (!dep.naturalPerson.publicKey) {
+        throw new Error('This dependant has no real-name key.');
+      }
+      return {
+        ...dep,
+        naturalPerson: { ...dep.naturalPerson, displayName: name },
+        naturalPersonActive: true,
+      };
+    });
     await loadDependants();
-  }, [encryptionKey, loadFreshDependants, loadDependants]);
+  }, [mutate, encryptionKey, loadDependants]);
 
   const addDependantPersona = useCallback(async (
     pubkey: string,
@@ -883,14 +886,14 @@ export function useDependants(
       derivationName,
     };
 
-    const updated = {
-      ...dep,
-      extraPersonas: [...(dep.extraPersonas ?? []), newPersona],
-    };
-
-    await saveDependant(updated, key);
+    // The derive above can take a device round trip: append to the record as it
+    // is now, and not twice if a sync brought the same persona in meanwhile.
+    await mutate(pubkey, key, cur => {
+      if (!cur || (cur.extraPersonas ?? []).some(p => p.publicKey === publicKey)) return null;
+      return { ...cur, extraPersonas: [...(cur.extraPersonas ?? []), newPersona] };
+    });
     await loadDependants();
-  }), [encryptionKey, loadFreshDependants, loadDependants, loadGuardianMnemonic]);
+  }), [mutate, encryptionKey, loadFreshDependants, loadDependants, loadGuardianMnemonic]);
 
   /**
    * Toggle a persona's visibility on the paired-child device. `visible: true`
@@ -907,16 +910,16 @@ export function useDependants(
     visible: boolean,
   ) => {
     if (!encryptionKey) throw new Error('Encryption key required');
-    const dep = dependants.find(d => d.id === depPubkey);
-    if (!dep) return;
-    const current = dep.hiddenOnPairedDeviceKeys ?? [];
-    const next: string[] = visible
-      ? current.filter(k => k !== personaPubkey)
-      : current.includes(personaPubkey) ? current : [...current, personaPubkey];
-    const updated: DependantIdentity = { ...dep, hiddenOnPairedDeviceKeys: next };
-    await saveDependant(updated, encryptionKey);
+    await mutate(depPubkey, encryptionKey, dep => {
+      if (!dep) return null;
+      const current = dep.hiddenOnPairedDeviceKeys ?? [];
+      const next: string[] = visible
+        ? current.filter(k => k !== personaPubkey)
+        : current.includes(personaPubkey) ? current : [...current, personaPubkey];
+      return { ...dep, hiddenOnPairedDeviceKeys: next };
+    });
     await loadDependants();
-  }, [dependants, encryptionKey, loadDependants]);
+  }, [mutate, encryptionKey, loadDependants]);
 
   /**
    * Hard-delete an extra persona from a dependant record. Mirror of
@@ -929,21 +932,24 @@ export function useDependants(
     personaPubkey: string,
   ) => personaMutations.run(async () => {
     if (!encryptionKey) throw new Error('Encryption key required');
-    const dep = (await loadFreshDependants(encryptionKey)).find(d => d.id === depPubkey);
-    if (!dep) return;
-    const persona = dep.extraPersonas?.find(p => p.publicKey === personaPubkey);
-    if (!persona) return;
-    const extraPersonaTombstones = dependantPersonaTombstones(dep.derivationPath, [
-      ...(dep.extraPersonaTombstones ?? []),
-      { derivationName: persona.derivationName, removedAt: Date.now() },
-    ]);
-    const updated = applyDependantPersonaTombstones({
-      ...dep,
-      extraPersonas: (dep.extraPersonas ?? []).filter(p => p.publicKey !== personaPubkey),
-      extraPersonaTombstones,
-      primaryKeypair: dep.primaryKeypair === personaPubkey ? 'persona' : dep.primaryKeypair,
+    let blobs: SlotBlobToDelete[] = [];
+    const saved = await mutate(depPubkey, encryptionKey, dep => {
+      if (!dep) return null;
+      const persona = dep.extraPersonas?.find(p => p.publicKey === personaPubkey);
+      if (!persona) return null;
+      blobs = collectSlotBlobsToDelete(dep, ['avatar', 'backdrop'], [personaPubkey]);
+      const extraPersonaTombstones = dependantPersonaTombstones(dep.derivationPath, [
+        ...(dep.extraPersonaTombstones ?? []),
+        { derivationName: persona.derivationName, removedAt: Date.now() },
+      ]);
+      return applyDependantPersonaTombstones({
+        ...dep,
+        extraPersonas: (dep.extraPersonas ?? []).filter(p => p.publicKey !== personaPubkey),
+        extraPersonaTombstones,
+        primaryKeypair: dep.primaryKeypair === personaPubkey ? 'persona' : dep.primaryKeypair,
+      });
     });
-    await saveDependant(updated, encryptionKey);
+    if (!saved) return { deletion: Promise.resolve() };
     // Sweep any §5.4.1 pre-auth records keyed on the removed persona so they
     // don't linger for up to 24h after the persona is gone. Best-effort —
     // an IDB hiccup here shouldn't block the reload.
@@ -951,8 +957,12 @@ export function useDependants(
       const dbMod = await import('../lib/db');
       await dbMod.deletePublicProfileSignAuthByPersona(depPubkey, personaPubkey);
     } catch { /* best-effort — 24h TTL is the fallback */ }
+    // The persona is gone from the stored record: its avatar and backdrop
+    // blobs go too (R1 still guards a blob another row references).
+    const deletion = deleteGoneBlobs(blobs);
     await loadDependants();
-  }), [encryptionKey, loadFreshDependants, loadDependants]);
+    return { deletion };
+  }), [mutate, encryptionKey, loadDependants, deleteGoneBlobs]);
 
   /**
    * Soft-delete a dep's extra persona via the `ExtraPersona.hidden` flag.
@@ -970,15 +980,12 @@ export function useDependants(
     hidden: boolean,
   ) => {
     if (!encryptionKey) throw new Error('Encryption key required');
-    const dep = dependants.find(d => d.id === depPubkey);
-    if (!dep) return;
-    const extras = (dep.extraPersonas ?? []).map(p =>
-      p.publicKey === personaPubkey ? { ...p, hidden } : p,
-    );
-    const updated: DependantIdentity = { ...dep, extraPersonas: extras };
-    await saveDependant(updated, encryptionKey);
+    await mutate(depPubkey, encryptionKey, dep => dep && {
+      ...dep,
+      extraPersonas: (dep.extraPersonas ?? []).map(p => (p.publicKey === personaPubkey ? { ...p, hidden } : p)),
+    });
     await loadDependants();
-  }, [dependants, encryptionKey, loadDependants]);
+  }, [mutate, encryptionKey, loadDependants]);
 
   /**
    * Return the dependant's NIP-46 transport keypair, generating + persisting
@@ -1006,21 +1013,29 @@ export function useDependants(
       return dep.bunkerEndpoint;
     }
 
-    const sk = generateSecretKey();
-    const privHex = bytesToHex(sk);
-    const pubHex = getPublicKey(sk);
-    sk.fill(0);
-
-    const endpoint: DependantBunkerEndpoint = {
-      publicKey: pubHex,
-      privateKey: privHex,
-      createdAt: Math.floor(Date.now() / 1000),
-    };
-    const updated: DependantIdentity = { ...dep, bunkerEndpoint: endpoint };
-    await saveDependant(updated, key);
+    let endpoint: DependantBunkerEndpoint | undefined;
+    await mutate(pubkey, key, cur => {
+      if (!cur) throw new Error('Dependant not found');
+      // Minted meanwhile (a second tap): keep that one.
+      if (cur.bunkerEndpoint?.privateKey && cur.bunkerEndpoint?.publicKey) {
+        endpoint = cur.bunkerEndpoint;
+        return null;
+      }
+      const sk = generateSecretKey();
+      const privHex = bytesToHex(sk);
+      const pubHex = getPublicKey(sk);
+      sk.fill(0);
+      endpoint = {
+        publicKey: pubHex,
+        privateKey: privHex,
+        createdAt: Math.floor(Date.now() / 1000),
+      };
+      return { ...cur, bunkerEndpoint: endpoint };
+    });
     await loadDependants();
+    if (!endpoint) throw new Error('Dependant not found');
     return endpoint;
-  }, [dependants, encryptionKey, loadDependants]);
+  }, [mutate, dependants, encryptionKey, loadDependants]);
 
   /**
    * Persist a fresh pairing secret on the dependant's endpoint record so
@@ -1050,17 +1065,14 @@ export function useDependants(
     // documented at the top of this file. See internal tracker (kid pair
     // "pairing not active" — multi-word dep name was a separate fix).
     if (!guardianPubkey) throw new Error('Cannot save pairing secret: no guardian pubkey');
-    const fresh = await getDependants(guardianPubkey, key);
-    const dep = fresh.find(d => d.id === pubkey);
-    if (!dep || !dep.bunkerEndpoint) throw new Error('Dependant has no bunker endpoint yet');
-    if (dep.bunkerEndpoint.pairingSecret === secret) return;
-    const updated: DependantIdentity = {
-      ...dep,
-      bunkerEndpoint: { ...dep.bunkerEndpoint, pairingSecret: secret },
-    };
-    await saveDependant(updated, key);
+    const saved = await mutate(pubkey, key, dep => {
+      if (!dep || !dep.bunkerEndpoint) throw new Error('Dependant has no bunker endpoint yet');
+      if (dep.bunkerEndpoint.pairingSecret === secret) return null;
+      return { ...dep, bunkerEndpoint: { ...dep.bunkerEndpoint, pairingSecret: secret } };
+    });
+    if (!saved) return;
     await loadDependants();
-  }, [guardianPubkey, encryptionKey, loadDependants]);
+  }, [mutate, guardianPubkey, encryptionKey, loadDependants]);
 
   /**
    * Record the client pubkey that successfully completed a `connect`
@@ -1074,44 +1086,44 @@ export function useDependants(
   ): Promise<void> => {
     const key = overrideEncryptionKey || encryptionKey;
     if (!key) throw new Error('Encryption key required');
-    const dep = dependants.find(d => d.id === pubkey);
-    if (!dep || !dep.bunkerEndpoint) return;
     const lcClient = clientPubkey.toLowerCase();
-    // Idempotent — if the same client is already bound we're done.
-    if (dep.bunkerEndpoint.authorizedClientPubkey === lcClient) return;
-    // Defence against double-bind race: if someone else is already bound
-    // AND the pairing secret has been cleared, a concurrent connect
-    // handler shouldn't silently overwrite the binding. The server-side
-    // bindingInFlightRef catches most cases, but this is belt-and-braces
-    // in case two React state ticks both see a stale `dependants` array.
-    if (dep.bunkerEndpoint.authorizedClientPubkey && !dep.bunkerEndpoint.pairingSecret) {
-      return;
-    }
     // Snapshot the OLD authorizedClientPubkey BEFORE we overwrite. If a
     // non-empty old client is being replaced (re-pair to a different device
     // via a freshly-minted pairing secret), sweep its pre-auth records so the
     // old client can't auto-sign for the remainder of the 24h TTL. Mirrors
     // the sweep in `clearDependantBunkerEndpoint`.
-    const oldClientPubkey = dep.bunkerEndpoint.authorizedClientPubkey;
-    const updated: DependantIdentity = {
-      ...dep,
-      bunkerEndpoint: {
-        ...dep.bunkerEndpoint,
-        authorizedClientPubkey: lcClient,
-        pairingSecret: undefined, // one-shot — clear after first successful bind
-      },
-    };
-    await saveDependant(updated, key);
+    let oldClientPubkey: string | undefined;
+    const saved = await mutate(pubkey, key, dep => {
+      if (!dep || !dep.bunkerEndpoint) return null;
+      // Idempotent — if the same client is already bound we're done.
+      if (dep.bunkerEndpoint.authorizedClientPubkey === lcClient) return null;
+      // Defence against double-bind race: if someone else is already bound
+      // AND the pairing secret has been cleared, a concurrent connect
+      // handler shouldn't silently overwrite the binding. The server-side
+      // bindingInFlightRef catches most cases; reading the record fresh in
+      // the write queue closes the rest.
+      if (dep.bunkerEndpoint.authorizedClientPubkey && !dep.bunkerEndpoint.pairingSecret) return null;
+      oldClientPubkey = dep.bunkerEndpoint.authorizedClientPubkey;
+      return {
+        ...dep,
+        bunkerEndpoint: {
+          ...dep.bunkerEndpoint,
+          authorizedClientPubkey: lcClient,
+          pairingSecret: undefined, // one-shot — clear after first successful bind
+        },
+      };
+    });
+    if (!saved) return;
     if (oldClientPubkey && oldClientPubkey !== lcClient) {
       try {
         const dbMod = await import('../lib/db');
-        await dbMod.deletePublicProfileSignAuthByClient(dep.id, oldClientPubkey);
+        await dbMod.deletePublicProfileSignAuthByClient(pubkey, oldClientPubkey);
       } catch {
         // Best-effort. Worst case the old records expire via their 24h TTL.
       }
     }
     await loadDependants();
-  }, [dependants, encryptionKey, loadDependants]);
+  }, [mutate, encryptionKey, loadDependants]);
 
   /**
    * Clear the dependant's NIP-46 transport keypair (revoke). Any paired child
@@ -1130,11 +1142,21 @@ export function useDependants(
   ): Promise<void> => {
     const key = overrideEncryptionKey || encryptionKey;
     if (!key) throw new Error('Encryption key required');
-    const dep = dependants.find(d => d.id === pubkey);
-    if (!dep || !dep.bunkerEndpoint) return;
-    const oldClientPubkey = dep.bunkerEndpoint.authorizedClientPubkey;
-    const updated: DependantIdentity = { ...dep, bunkerEndpoint: undefined };
-    await saveDependant(updated, key);
+    let oldClientPubkey: string | undefined;
+    let blobs: SlotBlobToDelete[] = [];
+    const saved = await mutate(pubkey, key, dep => {
+      if (!dep || !dep.bunkerEndpoint) return null;
+      oldClientPubkey = dep.bunkerEndpoint.authorizedClientPubkey;
+      // The phone is unpaired: what was sent to it goes with it. The pointers
+      // are cleared in the same write; the guardian's own `backdrop:` rows and
+      // every avatar stay, so the cards still show (a re-pair reads as unsent).
+      blobs = collectSlotBlobsToDelete(dep, ['backdrop']);
+      // A send still uploading must not save a pointer after this.
+      supersedeBackdropSends(dep.id, slotTargetsOf(dep));
+      return { ...(withoutBackdropPointers(dep) ?? dep), bunkerEndpoint: undefined };
+    });
+    if (!saved) return;
+    void deleteGoneBlobs(blobs);
     // Sweep pre-auth records bound to the outgoing client pubkey BEFORE
     // anyone can mint a new endpoint. Skipped when the old endpoint had
     // never completed a `connect` handshake (no client pubkey, no records).
@@ -1142,14 +1164,49 @@ export function useDependants(
     // error in the sweep must not block the loadDependants() refresh.
     if (oldClientPubkey) {
       try {
-        await deletePublicProfileSignAuthByClient(dep.id, oldClientPubkey);
+        await deletePublicProfileSignAuthByClient(pubkey, oldClientPubkey);
       } catch {
         // Best-effort. Worst case the old records expire via their 24h TTL.
       }
     }
     await loadDependants();
-  }, [dependants, encryptionKey, loadDependants]);
+  }, [mutate, encryptionKey, loadDependants, deleteGoneBlobs]);
 
+  /**
+   * Unpair side of the card backdrops: clear every slot's sent-backdrop
+   * pointer (the child's phone no longer gets it) and delete the blobs behind
+   * them, once the record has saved. The guardian's own `backdrop:` rows and
+   * every avatar are untouched, so the cards still show; a re-pair finds the
+   * slots unsent and the backfill sends them again. Best effort: resolves
+   * either way, and never throws (an unpair must not fail on a picture).
+   */
+  const clearDependantBackdrops = useCallback(async (depId: string): Promise<void> => {
+    const key = liveKeyRef.current;
+    if (!key) return;
+    let blobs: SlotBlobToDelete[] = [];
+    try {
+      const saved = await mutate(depId, key, dep => {
+        if (!dep) return null;
+        // Checked after the write queue's wait: a lock during it saves nothing.
+        if (liveKeyRef.current !== key) throw new Error('Encryption key required');
+        blobs = collectSlotBlobsToDelete(dep, ['backdrop']);
+        supersedeBackdropSends(dep.id, slotTargetsOf(dep));
+        return withoutBackdropPointers(dep);
+      });
+      if (!saved) return;
+    } catch {
+      return;
+    }
+    void deleteGoneBlobs(blobs);
+    if (liveKeyRef.current === key) await loadDependants();
+  }, [mutate, loadDependants, deleteGoneBlobs]);
 
-  return { dependants, loading, loadedWithKey, addDependant, importDependant, removeDependant, updateAutonomyStage, updateAuditVisibility, updatePetitionOnDeny, updateDependantName, updateDependantPhoto, switchDependantPrimary, updateDependantPersonaName, activateDependantNaturalPerson, addDependantPersona, updatePersonaVisibility, setDepExtraPersonaHidden, removeDependantExtraPersona, reorderDependants, ensureDependantBunkerEndpoint, clearDependantBunkerEndpoint, saveDependantPairingSecret, bindDependantBunkerClient, setDependantPersonaAvatar, clearDependantPersonaAvatar, setDependantPersonaContactAvatar, clearDependantPersonaContactAvatar, setDependantPersonaBackdrop, setDependantPersonaPublicProfile, clearDependantPersonaPublicProfile, setDependantSlotNip05Check, reload: loadDependants, loadFreshDependants };
+  /** `mutate` for App-level writers (child-device fields, the migration strip). */
+  const mutateDependantRecord = useCallback((
+    depId: string,
+    key: string,
+    fn: (dep: DependantIdentity | null) => DependantIdentity | null,
+  ) => mutate(depId, key, fn), [mutate]);
+
+  return { dependants, loading, loadedWithKey, addDependant, importDependant, removeDependant, updateAutonomyStage, updateAuditVisibility, updatePetitionOnDeny, updateDependantName, updateDependantPhoto, switchDependantPrimary, updateDependantPersonaName, activateDependantNaturalPerson, addDependantPersona, updatePersonaVisibility, setDepExtraPersonaHidden, removeDependantExtraPersona, reorderDependants, ensureDependantBunkerEndpoint, clearDependantBunkerEndpoint, clearDependantBackdrops, saveDependantPairingSecret, bindDependantBunkerClient, setDependantPersonaAvatar, clearDependantPersonaAvatar, setDependantPersonaContactAvatar, clearDependantPersonaContactAvatar, setDependantPersonaBackdrop, setDependantPersonaPublicProfile, clearDependantPersonaPublicProfile, setDependantSlotNip05Check, reload: loadDependants, loadFreshDependants, mutateDependantRecord };
 }

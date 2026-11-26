@@ -1,5 +1,5 @@
 import { describe, it, expect, vi } from 'vitest';
-import { sendBackdropToChild, removeBackdropFromChild, type BackdropSendDeps } from './backdrop-send';
+import { sendBackdropToChild, removeBackdropFromChild, supersedeBackdropSends, type BackdropSendDeps } from './backdrop-send';
 import { BACKDROP_UPLOADER_DOMAIN } from './blossom-uploader';
 import { BACKDROP_COPY } from './child-device-copy';
 import { BlossomUploadError, BLOSSOM_REFUSED_COPY } from './blossom';
@@ -38,7 +38,7 @@ describe('sendBackdropToChild', () => {
     if (res.ok) await res.deletion;
     expect(order).toEqual(['upload', 'save', 'delete']);
     expect(d.upload).toHaveBeenCalledWith(blob, SERVER, true, 'unlock-key');
-    expect(d.saveSlot).toHaveBeenCalledWith(META, DIGEST);
+    expect(d.saveSlot).toHaveBeenCalledWith(META, DIGEST, expect.any(Function));
     expect(d.deleteBlob).toHaveBeenCalledWith(BACKDROP_UPLOADER_DOMAIN, H1, SERVER);
   });
 
@@ -106,6 +106,24 @@ describe('sendBackdropToChild', () => {
   });
 });
 
+describe('an unpair that runs while the save waits in the write queue', () => {
+  it('hands the writer a check that turns false, and discards the upload when the writer refuses', async () => {
+    let seen: boolean[] = [];
+    const saveSlot = vi.fn(async (_m: unknown, _d?: string, stillCurrent?: () => boolean) => {
+      seen.push(stillCurrent!());
+      // The unpair's queued mutator ran before this save's turn.
+      supersedeBackdropSends('dep', ['persona']);
+      seen.push(stillCurrent!());
+      throw new Error('Superseded');
+    });
+    const { d } = deps({ slotKey: 'dep:persona', saveSlot });
+    const res = await sendBackdropToChild(blob, d);
+    expect(seen).toEqual([true, false]);
+    expect(res).toEqual({ ok: false, reason: BACKDROP_COPY.reasons.superseded });
+    expect(d.deleteBlob).toHaveBeenCalledWith(BACKDROP_UPLOADER_DOMAIN, H2, SERVER);
+  });
+});
+
 describe('an upload that spans a lock', () => {
   it('saves nothing when the app locked while uploading, and does not reload state', async () => {
     let key: string | null = 'unlock-key';
@@ -114,11 +132,29 @@ describe('an upload that spans a lock', () => {
     expect(d.saveSlot).not.toHaveBeenCalled();
   });
 
-  it('tries to delete the uploaded blob (a no-op while locked, since the uploader secret needs the key)', async () => {
+  it('records the uploaded blob as an orphan for the next unlock (deleting needs the key), and sends no delete', async () => {
     let key: string | null = 'unlock-key';
-    const { d } = deps({ getKey: () => key, upload: vi.fn(async () => { key = null; return META; }) });
+    const recordOrphan = vi.fn(async () => undefined);
+    const { d } = deps({ getKey: () => key, recordOrphan, upload: vi.fn(async () => { key = null; return META; }) });
     await sendBackdropToChild(blob, d);
-    expect(d.deleteBlob).toHaveBeenCalledWith(BACKDROP_UPLOADER_DOMAIN, H2, SERVER);
+    await vi.waitFor(() => expect(recordOrphan).toHaveBeenCalledWith({ domain: BACKDROP_UPLOADER_DOMAIN, hash: H2, url: SERVER }));
+    expect(d.deleteBlob).not.toHaveBeenCalled();
+  });
+
+  it('a lock during the save itself (the save refuses) is a lock too: orphan recorded, nothing deleted', async () => {
+    let key: string | null = 'unlock-key';
+    const recordOrphan = vi.fn(async () => undefined);
+    const { d } = deps({ getKey: () => key, recordOrphan, saveSlot: vi.fn(async () => { key = null; throw new Error('Encryption key required'); }) });
+    expect(await sendBackdropToChild(blob, d)).toEqual({ ok: false, reason: BACKDROP_COPY.reasons.locked });
+    await vi.waitFor(() => expect(recordOrphan).toHaveBeenCalledTimes(1));
+    expect(d.deleteBlob).not.toHaveBeenCalled();
+  });
+
+  it('an orphan whose delete fails while unlocked is recorded for a retry', async () => {
+    const recordOrphan = vi.fn(async () => undefined);
+    const { d } = deps({ recordOrphan, deleteBlob: vi.fn(async () => 'failed' as const), saveSlot: vi.fn(async () => { throw new Error('idb'); }) });
+    await sendBackdropToChild(blob, d);
+    await vi.waitFor(() => expect(recordOrphan).toHaveBeenCalledWith({ domain: BACKDROP_UPLOADER_DOMAIN, hash: H2, url: SERVER }));
   });
 
   it('a different key after the upload counts as a lock too', async () => {
@@ -131,7 +167,7 @@ describe('an upload that spans a lock', () => {
   it('an unchanged key saves as normal', async () => {
     const { d } = deps({ getKey: () => 'unlock-key' });
     expect((await sendBackdropToChild(blob, d)).ok).toBe(true);
-    expect(d.saveSlot).toHaveBeenCalledWith(META, DIGEST);
+    expect(d.saveSlot).toHaveBeenCalledWith(META, DIGEST, expect.any(Function));
   });
 });
 
@@ -155,7 +191,7 @@ describe('overlapping sends and removes on one slot', () => {
     const lost = await a;
     expect(lost.ok).toBe(false);
     expect(d.saveSlot).toHaveBeenCalledTimes(1);
-    expect(d.saveSlot).toHaveBeenCalledWith(metaN('b'), DIGEST);
+    expect(d.saveSlot).toHaveBeenCalledWith(metaN('b'), DIGEST, expect.any(Function));
     expect(d.deleteBlob).toHaveBeenCalledWith(BACKDROP_UPLOADER_DOMAIN, 'a'.repeat(64), SERVER);
   });
 
@@ -170,7 +206,7 @@ describe('overlapping sends and removes on one slot', () => {
     second.resolve(metaN('b'));
     expect((await b).ok).toBe(true);
     expect(d.saveSlot).toHaveBeenCalledTimes(1);
-    expect(d.saveSlot).toHaveBeenCalledWith(metaN('b'), DIGEST);
+    expect(d.saveSlot).toHaveBeenCalledWith(metaN('b'), DIGEST, expect.any(Function));
   });
 
   it('a remove during an upload wins: the pointer is cleared and the upload is discarded', async () => {
@@ -273,7 +309,7 @@ describe('buildDependantBackdropLookup', () => {
       const link = lookup(pk)!;
       expect(link.name).toBe('Lily');
       await link.send(blob);
-      expect(setSlot).toHaveBeenLastCalledWith(PERSONA, target, META, DIGEST);
+      expect(setSlot).toHaveBeenLastCalledWith(PERSONA, target, META, DIGEST, expect.any(Function));
     }
   });
 

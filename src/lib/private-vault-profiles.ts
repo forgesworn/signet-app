@@ -103,9 +103,19 @@ export function profilesVaultAdapter(args: {
       });
       for (const dep of restored) {
         current();
-        const existing = (await db.getDependants(args.ownerPubkey, args.encryptionKey)).find(d => d.id === dep!.id);
-        if (existing && existing.createdAt > dep!.createdAt) continue;
-        await db.saveDependant(mergeDependantWithLocal(dep!, existing ?? null, createdAt), args.encryptionKey);
+        // Fresh read and merge inside the dependant write queue (see `mutateDependant`).
+        try {
+          await db.mutateDependant(args.ownerPubkey, dep!.id, args.encryptionKey, existing => {
+            current();
+            if (existing && existing.createdAt > dep!.createdAt) return null;
+            return mergeDependantWithLocal(dep!, existing, createdAt);
+          }, { create: true });
+        } catch {
+          // The session ending is not a skip: it stops the restore, as before.
+          current();
+          // The local row exists but cannot be read (or is not this guardian's):
+          // leave it alone and restore the rest, as the sync rail does.
+        }
       }
       });
       for (const closure of closures) {

@@ -121,7 +121,23 @@ function sharedFetch(key: string, start: () => Promise<Blob>): Promise<Blob> {
   return p;
 }
 
-async function syncSlot(slot: SlotView, deps: GuardianBackdropDeps): Promise<void> {
+// Bumped by every drop (the pairing ended). A run holds the value it started
+// under and writes a guardian row only while it is unchanged, so a pass that was
+// already fetching when the pairing ended cannot put a picture back after the
+// drop deleted them all. Rows being written at that moment are awaited by the drop.
+let dropEpoch = 0;
+const rowWrites = new Set<Promise<unknown>>();
+
+async function writeGuardianRow(epoch: number, deps: GuardianBackdropDeps, pubkey: string, blob: Blob, hash: string): Promise<boolean> {
+  if (epoch !== dropEpoch || !deps.isLive()) return false;
+  const write = Promise.resolve(deps.setGuardianBackdrop(pubkey, blob, hash));
+  const tracked = write.catch(() => undefined);
+  rowWrites.add(tracked);
+  try { await write; } finally { rowWrites.delete(tracked); }
+  return true;
+}
+
+async function syncSlot(slot: SlotView, deps: GuardianBackdropDeps, epoch: number): Promise<void> {
   const { pubkey, pointer } = slot;
   const stored = await deps.getGuardianBackdrop(pubkey).catch(() => null);
   if (!pointer) {
@@ -132,8 +148,7 @@ async function syncSlot(slot: SlotView, deps: GuardianBackdropDeps): Promise<voi
   }
   if (stored?.hash === pointer.hash) return;
   const blob = await sharedFetch(`${pubkey}:${pointer.hash}`, () => deps.fetchBackdrop(pointer));
-  if (!deps.isLive()) return;
-  await deps.setGuardianBackdrop(pubkey, blob, pointer.hash);
+  if (!await writeGuardianRow(epoch, deps, pubkey, blob, pointer.hash)) return;
   await deps.refresh(pubkey);
 }
 
@@ -143,11 +158,12 @@ export async function syncGuardianBackdrops(identity: IdentityView | null, deps:
   const slots = slotsOf(identity);
   // An identity that names no slot says nothing about which personas left.
   if (slots.length === 0) return;
+  const epoch = dropEpoch;
 
   for (const slot of slots) {
     if (!deps.isLive()) return;
     try {
-      await syncSlot(slot, deps);
+      await syncSlot(slot, deps, epoch);
     } catch {
       // Silent: the next run retries.
     }
@@ -171,3 +187,29 @@ export async function syncGuardianBackdrops(identity: IdentityView | null, deps:
     // Silent: an orphan row is invisible, and the next run sweeps again.
   }
 }
+
+/**
+ * The pairing ended: drop every picture a guardian sent (`backdrop-guardian:`
+ * rows) and repaint, so each card falls back to the child's own pick or none.
+ * The child's own `backdrop:` picks stay. Best effort per row, never throws.
+ */
+export async function dropGuardianBackdrops(deps: Pick<GuardianBackdropDeps, 'deleteGuardianBackdrop' | 'listRowPubkeys' | 'refresh'>): Promise<void> {
+  // Passes already running may not start another row write; the ones mid-write
+  // finish before the rows are listed, so the drop sees (and deletes) them.
+  dropEpoch++;
+  await Promise.all([...rowWrites]);
+  let pubkeys: string[];
+  try { pubkeys = (await deps.listRowPubkeys()).guardian; } catch { return; }
+  for (const pubkey of pubkeys) {
+    try {
+      await deps.deleteGuardianBackdrop(pubkey);
+      await deps.refresh(pubkey);
+    } catch { /* the next run of the sweep retries */ }
+  }
+}
+
+export const defaultDropGuardianBackdropDeps = (): Pick<GuardianBackdropDeps, 'deleteGuardianBackdrop' | 'listRowPubkeys' | 'refresh'> => ({
+  deleteGuardianBackdrop: db.deleteGuardianBackdrop,
+  listRowPubkeys: db.listBackdropRowPubkeys,
+  refresh: refreshCardBackdrop,
+});

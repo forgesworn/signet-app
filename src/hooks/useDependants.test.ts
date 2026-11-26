@@ -374,6 +374,10 @@ describe('useDependants.setDependantPersonaBackdrop', () => {
     });
     await act(async () => {
       await result.current.addDependantPersona(dep.id, 'Games', undefined, { deviceDerive: async () => ({ publicKey: EXTRA, privateKey: '' as const }) });
+      // A backdrop pointer is only ever saved for a dependant with a paired phone.
+      await result.current.mutateDependantRecord(dep.id, KEY, d => d && ({
+        ...d, bunkerEndpoint: { publicKey: 'e'.repeat(64), privateKey: 'f'.repeat(64), createdAt: 1, authorizedClientPubkey: 'c'.repeat(64) },
+      }));
     });
     return { g, result, dep };
   }
@@ -424,6 +428,32 @@ describe('useDependants.setDependantPersonaBackdrop', () => {
     });
   });
 
+  it('refuses a save the sender says was outranked while it waited its turn, and saves nothing', async () => {
+    const { g, result, dep } = await setup();
+    await act(async () => {
+      await expect(result.current.setDependantPersonaBackdrop(dep.id, 'persona', bd('1'), { stillCurrent: () => false })).rejects.toThrow();
+      await expect(result.current.setDependantPersonaBackdrop(dep.id, 'persona', bd('1'), { stillCurrent: () => true })).resolves.toBeDefined();
+    });
+    const stored = (await getDependants(g.naturalPerson.publicKey, KEY))[0];
+    expect(stored.persona.backdropHash).toBe('1'.repeat(64));
+  });
+
+  it('refuses a pointer once the dependant has no paired phone, but still clears one', async () => {
+    const { g, result, dep } = await setup();
+    await act(async () => { await result.current.setDependantPersonaBackdrop(dep.id, 'persona', bd('1')); });
+    await act(async () => {
+      await result.current.mutateDependantRecord(dep.id, KEY, d => d && ({ ...d, bunkerEndpoint: undefined }));
+    });
+    await act(async () => {
+      await expect(result.current.setDependantPersonaBackdrop(dep.id, 'persona', bd('2'))).rejects.toThrow('No phone paired');
+    });
+    let stored = (await getDependants(g.naturalPerson.publicKey, KEY))[0];
+    expect(stored.persona.backdropHash).toBe('1'.repeat(64));
+    await act(async () => { await result.current.setDependantPersonaBackdrop(dep.id, 'persona', null); });
+    stored = (await getDependants(g.naturalPerson.publicKey, KEY))[0];
+    expect(stored.persona.backdropHash).toBeUndefined();
+  });
+
   it('refuses when there is no guardian pubkey', async () => {
     const { result } = renderHook(() => useDependants(undefined, undefined, KEY));
     await waitFor(() => expect(result.current.loading).toBe(false));
@@ -451,10 +481,89 @@ describe('useDependants.setDependantPersonaBackdrop', () => {
     expect(stored.persona.backdropHash).toBeUndefined();
   });
 
+  it('a write that resolves after a lock does not put decrypted records back into state', async () => {
+    const g = await seedGuardian(false);
+    const SECRET = '9'.repeat(64);
+    const { result, rerender } = renderHook(({ k }: { k: string | null }) => useDependants(g.naturalPerson.publicKey, g.id, k), { initialProps: { k: KEY as string | null } });
+    await waitFor(() => expect(result.current.loading).toBe(false));
+    let dep!: Awaited<ReturnType<typeof result.current.addDependant>>;
+    await act(async () => {
+      dep = await result.current.addDependant('Robin', undefined, { deviceDerive: async () => ({
+        naturalPerson: { publicKey: NP, privateKey: SECRET as never }, persona: { publicKey: PERSONA, privateKey: '' as const },
+      }) });
+    });
+    await waitFor(() => expect(result.current.dependants[0]?.naturalPerson.privateKey).toBe(SECRET));
+    // A setter from the unlocked render; the app locks before its write resolves.
+    const stale = result.current.updateAutonomyStage;
+    rerender({ k: null });
+    await waitFor(() => expect(result.current.loadedWithKey).toBe(false));
+    expect(result.current.dependants[0]?.naturalPerson.privateKey).not.toBe(SECRET);
+    await act(async () => { await stale(dep.id, 'request-approve'); });
+    expect(JSON.stringify(result.current.dependants)).not.toContain(SECRET);
+  });
+
+  it('a reload through a closure from before an unlock reads under the live key', async () => {
+    const g = await seedGuardian(false);
+    const SECRET = '9'.repeat(64);
+    const { result, rerender } = renderHook(({ k }: { k: string | null }) => useDependants(g.naturalPerson.publicKey, g.id, k), { initialProps: { k: KEY as string | null } });
+    await waitFor(() => expect(result.current.loading).toBe(false));
+    await act(async () => {
+      await result.current.addDependant('Robin', undefined, { deviceDerive: async () => ({
+        naturalPerson: { publicKey: NP, privateKey: SECRET as never }, persona: { publicKey: PERSONA, privateKey: '' as const },
+      }) });
+    });
+    rerender({ k: null });
+    await waitFor(() => expect(result.current.loadedWithKey).toBe(false));
+    // A writer captured while locked awaits an unlock, then reloads through its old closure.
+    const staleReload = result.current.reload;
+    rerender({ k: KEY });
+    await waitFor(() => expect(result.current.loadedWithKey).toBe(true));
+    await act(async () => { await staleReload(); });
+    expect(result.current.loadedWithKey).toBe(true);
+    expect(result.current.dependants[0]?.naturalPerson.privateKey).toBe(SECRET);
+  });
+
   it('clearing a slot that names nothing is a no-op success', async () => {
     const { result, dep } = await setup();
     let out!: Awaited<ReturnType<typeof result.current.setDependantPersonaBackdrop>>;
     await act(async () => { out = await result.current.setDependantPersonaBackdrop(dep.id, 'persona', null); });
     expect(out).toEqual({});
+  });
+
+  // Gap 2: every writer reads the record fresh in the dependant write queue, so
+  // a setter held from an older render can no longer save its stale snapshot
+  // over a field another setter just wrote.
+  it('an avatar and a backdrop set on the same slot both land, fired together or from stale closures', async () => {
+    const { g, result, dep } = await setup();
+    const { setDependantPersonaAvatar: setAvatar, setDependantPersonaBackdrop: setBackdrop, updatePersonaVisibility, updateDependantName } = result.current;
+    const av = { hash: '4'.repeat(64), blossomUrl: 'https://nostr.download', keyHex: '4'.repeat(64), updatedAt: 7 };
+    await act(async () => {
+      await Promise.all([setBackdrop(dep.id, 'persona', bd('1')), setAvatar(dep.id, 'persona', av)]);
+    });
+    // Same closures again, awaited one after the other: the second used to save
+    // the pre-change snapshot it closed over.
+    await act(async () => { await setBackdrop(dep.id, EXTRA, bd('2')); });
+    await act(async () => { await updatePersonaVisibility(dep.id, EXTRA, false); });
+    await act(async () => { await updateDependantName(dep.id, 'Robin B'); });
+    const stored = (await getDependants(g.naturalPerson.publicKey, KEY))[0];
+    expect(stored.persona).toMatchObject({ backdropHash: '1'.repeat(64), avatarHash: '4'.repeat(64), avatarKey: '4'.repeat(64) });
+    expect(stored.extraPersonas![0].backdropHash).toBe('2'.repeat(64));
+    expect(stored.hiddenOnPairedDeviceKeys).toEqual([EXTRA]);
+    expect(stored.displayName).toBe('Robin B');
+  });
+
+  it('the avatar setter reports the avatar it replaced, and the clear reports what it cleared', async () => {
+    const { result, dep } = await setup();
+    const av = (n: string) => ({ hash: n.repeat(64), blossomUrl: 'https://nostr.download', keyHex: n.repeat(64), updatedAt: 7 });
+    let out!: { previous?: { hash: string; server: string } };
+    await act(async () => { out = await result.current.setDependantPersonaAvatar(dep.id, 'persona', av('5')); });
+    expect(out.previous).toBeUndefined();
+    await act(async () => { out = await result.current.setDependantPersonaAvatar(dep.id, 'persona', av('6')); });
+    expect(out.previous).toEqual({ hash: '5'.repeat(64), server: 'https://nostr.download' });
+    await act(async () => { out = await result.current.clearDependantPersonaAvatar(dep.id, 'persona'); });
+    expect(out.previous).toEqual({ hash: '6'.repeat(64), server: 'https://nostr.download' });
+    await act(async () => {
+      await expect(result.current.setDependantPersonaAvatar(dep.id, 'e'.repeat(64), av('7'))).rejects.toThrow('Persona not found');
+    });
   });
 });

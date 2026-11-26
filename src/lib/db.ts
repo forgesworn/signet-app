@@ -2001,6 +2001,37 @@ export async function listBackdropRowPubkeys(): Promise<{ own: string[]; guardia
   return { own: await keys('backdrop:'), guardian: await keys('backdrop-guardian:') };
 }
 
+// --- Orphaned Blossom blobs ---
+//
+// A blob this install uploaded that nothing stored points at, which could not
+// be deleted when it was orphaned (the app locked mid-upload: deleting needs
+// the unlock key, which seals the uploader secret). One plaintext row per blob,
+// `blob-orphan:<hash>`, beside the backdrop rows in `preferences`: writable
+// with no key, wiped by `clear('preferences')` in `purgeAllUserData`. Holds
+// only the hash, server and uploader domain, never a key. The sweep and the
+// validation live in `blob-deletion.ts`.
+
+const BLOB_ORPHAN_PREFIX = 'blob-orphan:';
+
+/** Put one orphan row, keyed by its hash. `entry` is validated by the caller. */
+export async function putBlobOrphanRow(entry: { domain: string; hash: string; url: string; addedAt: number; attempts: number }): Promise<void> {
+  const db = await getDB();
+  await db.put('preferences', { id: BLOB_ORPHAN_PREFIX + entry.hash, ...entry });
+}
+
+/** Every orphan row as stored (unvalidated), by key-range scan. */
+export async function listBlobOrphanRows(): Promise<unknown[]> {
+  const db = await getDB();
+  return db.getAll('preferences', IDBKeyRange.bound(BLOB_ORPHAN_PREFIX, `${BLOB_ORPHAN_PREFIX}\uffff`));
+}
+
+/** Delete one orphan row by its stored id (`blob-orphan:<hash>`); other ids are ignored. */
+export async function deleteBlobOrphanRow(id: string): Promise<void> {
+  if (!id.startsWith(BLOB_ORPHAN_PREFIX)) return;
+  const db = await getDB();
+  await db.delete('preferences', id);
+}
+
 // --- Origin Policies (per-origin identity-selection memory) ---
 
 /** Normalise an origin to the form used as the keyPath — no path, no trailing slash. */
@@ -2046,7 +2077,94 @@ import type { KenEntry } from '@forgesworn/kenspeckle';
 
 const DEPENDANT_PREFIX = 'dependant:';
 
-export async function saveDependant(dependant: DependantIdentity, encryptionKey: string): Promise<void> {
+// --- Serialised dependant writes ---
+//
+// A dependant row is written whole (`writeDependantRecord`), so two writers that
+// each read the record, await something, then put their copy lose one another's
+// fields. Every write of a `dependant:` row therefore runs on ONE module-level
+// queue, and a writer that changes part of a record goes through
+// `mutateDependant`, which reads the record fresh INSIDE the queue.
+//
+// The queue is not re-entrant: a task that waits on another write of the same
+// queue waits on itself. A nested call made from a mutator's synchronous body
+// is refused (see `insideDependantMutator`); one made after an `await` inside a
+// mutator cannot be detected and would hang. So a mutator never calls
+// `mutateDependant`, `saveDependant`, `deleteDependant`, `clearChildDevice` or
+// any app-bunker pairing helper: it computes the next record from the one it is
+// given, and anything slow (an upload, a device derive) happens before.
+// Outer queues (`personaMutations`, `contactsMutationQueue`, per-slot serials)
+// may hold this one; this one never holds them.
+
+const dependantWriteQueue = createSerialQueue();
+let insideDependantMutator = false;
+
+const DEPENDANT_WRITE_NOT_REENTRANT = 'Dependant writes are not re-entrant: a mutator must not write a dependant';
+
+function runDependantWrite<T>(task: () => Promise<T>): Promise<T> {
+  if (insideDependantMutator) return Promise.reject(new Error(DEPENDANT_WRITE_NOT_REENTRANT));
+  return dependantWriteQueue.run(task);
+}
+
+/** One stored dependant, decrypted, or null when there is none (or it was handed over). Throws when it cannot be decrypted. */
+async function readDependantForWrite(dependantId: string, encryptionKey: string): Promise<DependantIdentity | null> {
+  const db = await getDB();
+  const record = await db.get('identity', DEPENDANT_PREFIX + dependantId);
+  if (!record) return null;
+  if (await db.get('privateVaultState', `independence:closed:dependant:${dependantId}`)) return null;
+  // Same rule as `getDependants`: a row not marked encrypted is not a dependant.
+  if (record.encrypted !== true) return null;
+  return liftDependantPublicProfileConfig(await decryptDependantRow(record, dependantId, encryptionKey));
+}
+
+/**
+ * Change one dependant record safely. Inside the dependant write queue: read
+ * the record fresh (decrypted), call `fn` with it, and save what `fn` returns.
+ * Resolves with the saved record, or null when `fn` returned null (no write).
+ *
+ * `fn(null)` means the record is not there. It may only create one when the
+ * caller passes `{ create: true }` (the sync merges, which create dependants
+ * another device added); otherwise returning a record for null throws.
+ * A record that exists but cannot be decrypted throws before `fn` runs, so
+ * a create can never overwrite it.
+ *
+ * `fn` must not write a dependant itself (see the queue note above). Checks
+ * that must hold at write time (the unlock key still live, a sync run still
+ * current) belong inside `fn`, which runs after the queue wait.
+ */
+export function mutateDependant(
+  guardianPubkey: string,
+  dependantId: string,
+  encryptionKey: string,
+  fn: (current: DependantIdentity | null) => DependantIdentity | null | Promise<DependantIdentity | null>,
+  opts?: { create?: boolean },
+): Promise<DependantIdentity | null> {
+  return runDependantWrite(async () => {
+    if (!encryptionKey || encryptionKey.length < 8) throw new Error('Encryption key required');
+    const current = await readDependantForWrite(dependantId, encryptionKey);
+    if (current && current.guardianPubkey !== guardianPubkey) throw new Error('Dependant not found');
+    let pending: DependantIdentity | null | Promise<DependantIdentity | null>;
+    insideDependantMutator = true;
+    try { pending = fn(current); } finally { insideDependantMutator = false; }
+    const next = await pending;
+    if (!next) return null;
+    if (!current && !opts?.create) throw new Error('Dependant not found');
+    if (next.id !== dependantId) throw new Error('A dependant mutation cannot change its id');
+    await writeDependantRecord(next, encryptionKey);
+    return next;
+  });
+}
+
+/**
+ * Write a whole dependant record, queued. For a record built from scratch (a
+ * new dependant) or in tests; a change to an existing record goes through
+ * `mutateDependant`, which reads it fresh first.
+ */
+export function saveDependant(dependant: DependantIdentity, encryptionKey: string): Promise<void> {
+  return runDependantWrite(() => writeDependantRecord(dependant, encryptionKey));
+}
+
+/** The unqueued whole-record put. Only ever called from inside `runDependantWrite`. */
+async function writeDependantRecord(dependant: DependantIdentity, encryptionKey: string): Promise<void> {
   if (!encryptionKey || encryptionKey.length < 8) {
     throw new Error('Encryption key required');
   }
@@ -2160,17 +2278,139 @@ export async function saveDependant(dependant: DependantIdentity, encryptionKey:
  * drops `bunkerEndpoint.authorizedClientPubkey` when it names that phone.
  * Touches only clear routing fields, so no key is needed.
  */
-export async function clearChildDevice(dependantId: string): Promise<void> {
-  const db = await getDB();
-  const key = DEPENDANT_PREFIX + dependantId;
-  const row = await db.get('identity', key) as (Record<string, unknown> & { childDevice?: { clientPubkey?: string }; bunkerEndpoint?: { authorizedClientPubkey?: string } }) | undefined;
-  if (!row || !row.childDevice) return;
-  const { childDevice, ...rest } = row;
-  const ep = rest.bunkerEndpoint;
-  const next = ep && ep.authorizedClientPubkey && ep.authorizedClientPubkey === childDevice.clientPubkey
-    ? { ...rest, bunkerEndpoint: { ...ep, authorizedClientPubkey: undefined } }
-    : rest;
-  await db.put('identity', next);
+export function clearChildDevice(dependantId: string): Promise<void> {
+  return runDependantWrite(async () => {
+    const db = await getDB();
+    const key = DEPENDANT_PREFIX + dependantId;
+    const row = await db.get('identity', key) as (Record<string, unknown> & { childDevice?: { clientPubkey?: string }; bunkerEndpoint?: { authorizedClientPubkey?: string } }) | undefined;
+    if (!row || !row.childDevice) return;
+    const { childDevice, ...rest } = row;
+    const ep = rest.bunkerEndpoint;
+    const next = ep && ep.authorizedClientPubkey && ep.authorizedClientPubkey === childDevice.clientPubkey
+      ? { ...rest, bunkerEndpoint: { ...ep, authorizedClientPubkey: undefined } }
+      : rest;
+    await db.put('identity', next);
+  });
+}
+
+/**
+ * Decrypt one stored dependant row (the multi-layer `decryptFully` path).
+ * Throws when any field fails to decrypt; callers decide whether to skip.
+ */
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+async function decryptDependantRow(record: any, realId: string, encryptionKey: string): Promise<DependantIdentity> {
+  const HEX_KEY_RE = /^[0-9a-f]{64}$/;
+  async function decryptFully(value: string): Promise<string> {
+    if (!value) return '';
+    let result = await decryptSecret(value, encryptionKey!);
+    let safety = 10;
+    while (safety-- > 0) {
+      if (HEX_KEY_RE.test(result) || !isEncrypted(result)) break;
+      try {
+        result = await decryptSecret(result, encryptionKey!);
+      } catch {
+        break;
+      }
+    }
+    return result;
+  }
+  const npPriv = record.naturalPerson?.privateKey
+    ? await decryptFully(record.naturalPerson.privateKey)
+    : '';
+  const personaPriv = record.persona?.privateKey
+    ? await decryptFully(record.persona.privateKey)
+    : '';
+  // Per-persona avatar keys — same shape as privateKey (64-char hex),
+  // so decryptFully's HEX_KEY_RE termination terminates cleanly.
+  const npAvatarKey = record.naturalPerson?.avatarKey
+    ? await decryptFully(record.naturalPerson.avatarKey)
+    : undefined;
+  const personaAvatarKey = record.persona?.avatarKey
+    ? await decryptFully(record.persona.avatarKey)
+    : undefined;
+  // Contact-share avatar keys — same shape as avatarKey (64-char hex).
+  const npContactAvatarKey = record.naturalPerson?.contactAvatarKey
+    ? await decryptFully(record.naturalPerson.contactAvatarKey)
+    : undefined;
+  const personaContactAvatarKey = record.persona?.contactAvatarKey
+    ? await decryptFully(record.persona.contactAvatarKey)
+    : undefined;
+  // Backdrop keys — same shape as avatarKey (64-char hex).
+  const npBackdropKey = record.naturalPerson?.backdropKey
+    ? await decryptFully(record.naturalPerson.backdropKey)
+    : undefined;
+  const personaBackdropKey = record.persona?.backdropKey
+    ? await decryptFully(record.persona.backdropKey)
+    : undefined;
+  const decExtras = record.extraPersonas
+    ? await Promise.all((record.extraPersonas as ExtraPersona[]).map(async (ep: ExtraPersona) => ({
+        ...ep,
+        privateKey: ep.privateKey ? await decryptFully(ep.privateKey) : '',
+        avatarKey: ep.avatarKey ? await decryptFully(ep.avatarKey) : undefined,
+        contactAvatarKey: ep.contactAvatarKey ? await decryptFully(ep.contactAvatarKey) : undefined,
+        backdropKey: ep.backdropKey ? await decryptFully(ep.backdropKey) : undefined,
+      })))
+    : undefined;
+  const decEndpoint = record.bunkerEndpoint
+    ? {
+        publicKey: record.bunkerEndpoint.publicKey,
+        privateKey: record.bunkerEndpoint.privateKey
+          ? await decryptFully(record.bunkerEndpoint.privateKey)
+          : '',
+        createdAt: record.bunkerEndpoint.createdAt,
+        // Pair-flow state fields. The decoder
+        // previously only carried `publicKey`/`privateKey`/`createdAt`
+        // through, which silently dropped both fields on every read —
+        // meaning a successful `bindDependantBunkerClient` would write
+        // `authorizedClientPubkey` to IDB but the next reload would
+        // return the endpoint with `authorizedClientPubkey: undefined`.
+        // That, in turn, made the publisher gate
+        // (`endpoint.authorizedClientPubkey`) always fail, masking
+        // every paired-child handshake.
+        //
+        // `pairingSecret` is ciphertext at rest (2026-07-02 audit —
+        // encrypted on write above, symmetric with appBunkerEndpoint's
+        // pairingSecret). Decrypt only if present; tolerate failure as
+        // "no pair window open" rather than throwing the whole
+        // dependant out. `authorizedClientPubkey` stays clear (public
+        // pubkey, no secret).
+        pairingSecret: record.bunkerEndpoint.pairingSecret
+          ? await decryptFully(record.bunkerEndpoint.pairingSecret).catch(() => undefined)
+          : undefined,
+        authorizedClientPubkey: record.bunkerEndpoint.authorizedClientPubkey,
+      }
+    : undefined;
+  // App-bunker endpoint. PrivateKey + pairingSecret are
+  // ciphertext at rest; pairings are clear (no secrets). Decrypt the
+  // pairing secret only if present — empty/undefined means no
+  // pair window is open.
+  let decAppEndpoint: TrustedAppEndpoint | undefined;
+  if (record.appBunkerEndpoint) {
+    const ae = record.appBunkerEndpoint as TrustedAppEndpoint;
+    let decSecret: string | undefined = undefined;
+    if (ae.pairingSecret) {
+      try { decSecret = await decryptFully(ae.pairingSecret); }
+      catch { /* tolerate — treat as no pair window */ }
+    }
+    decAppEndpoint = {
+      publicKey: ae.publicKey,
+      privateKey: ae.privateKey ? await decryptFully(ae.privateKey) : '',
+      createdAt: ae.createdAt,
+      pairingSecret: decSecret,
+      pairings: Array.isArray(ae.pairings) ? ae.pairings : [],
+    };
+  }
+  return {
+    ...record,
+    id: realId,
+    naturalPerson: { ...record.naturalPerson, privateKey: npPriv, avatarKey: npAvatarKey, contactAvatarKey: npContactAvatarKey, backdropKey: npBackdropKey },
+    persona: { ...record.persona, privateKey: personaPriv, avatarKey: personaAvatarKey, contactAvatarKey: personaContactAvatarKey, backdropKey: personaBackdropKey },
+    extraPersonas: decExtras,
+    bunkerEndpoint: decEndpoint,
+    appBunkerEndpoint: decAppEndpoint,
+    primaryKeypair: record.primaryKeypair || 'natural-person',
+    encrypted: false,
+  } as DependantIdentity;
 }
 
 export async function getDependants(guardianPubkey: string, encryptionKey?: string): Promise<DependantIdentity[]> {
@@ -2184,118 +2424,7 @@ export async function getDependants(guardianPubkey: string, encryptionKey?: stri
     if (await db.get('privateVaultState', `independence:closed:dependant:${realId}`)) continue;
     if (encryptionKey && record.encrypted) {
       try {
-        const HEX_KEY_RE = /^[0-9a-f]{64}$/;
-        async function decryptFully(value: string): Promise<string> {
-          if (!value) return '';
-          let result = await decryptSecret(value, encryptionKey!);
-          let safety = 10;
-          while (safety-- > 0) {
-            if (HEX_KEY_RE.test(result) || !isEncrypted(result)) break;
-            try {
-              result = await decryptSecret(result, encryptionKey!);
-            } catch {
-              break;
-            }
-          }
-          return result;
-        }
-        const npPriv = record.naturalPerson?.privateKey
-          ? await decryptFully(record.naturalPerson.privateKey)
-          : '';
-        const personaPriv = record.persona?.privateKey
-          ? await decryptFully(record.persona.privateKey)
-          : '';
-        // Per-persona avatar keys — same shape as privateKey (64-char hex),
-        // so decryptFully's HEX_KEY_RE termination terminates cleanly.
-        const npAvatarKey = record.naturalPerson?.avatarKey
-          ? await decryptFully(record.naturalPerson.avatarKey)
-          : undefined;
-        const personaAvatarKey = record.persona?.avatarKey
-          ? await decryptFully(record.persona.avatarKey)
-          : undefined;
-        // Contact-share avatar keys — same shape as avatarKey (64-char hex).
-        const npContactAvatarKey = record.naturalPerson?.contactAvatarKey
-          ? await decryptFully(record.naturalPerson.contactAvatarKey)
-          : undefined;
-        const personaContactAvatarKey = record.persona?.contactAvatarKey
-          ? await decryptFully(record.persona.contactAvatarKey)
-          : undefined;
-        // Backdrop keys — same shape as avatarKey (64-char hex).
-        const npBackdropKey = record.naturalPerson?.backdropKey
-          ? await decryptFully(record.naturalPerson.backdropKey)
-          : undefined;
-        const personaBackdropKey = record.persona?.backdropKey
-          ? await decryptFully(record.persona.backdropKey)
-          : undefined;
-        const decExtras = record.extraPersonas
-          ? await Promise.all((record.extraPersonas as ExtraPersona[]).map(async (ep: ExtraPersona) => ({
-              ...ep,
-              privateKey: ep.privateKey ? await decryptFully(ep.privateKey) : '',
-              avatarKey: ep.avatarKey ? await decryptFully(ep.avatarKey) : undefined,
-              contactAvatarKey: ep.contactAvatarKey ? await decryptFully(ep.contactAvatarKey) : undefined,
-              backdropKey: ep.backdropKey ? await decryptFully(ep.backdropKey) : undefined,
-            })))
-          : undefined;
-        const decEndpoint = record.bunkerEndpoint
-          ? {
-              publicKey: record.bunkerEndpoint.publicKey,
-              privateKey: record.bunkerEndpoint.privateKey
-                ? await decryptFully(record.bunkerEndpoint.privateKey)
-                : '',
-              createdAt: record.bunkerEndpoint.createdAt,
-              // Pair-flow state fields. The decoder
-              // previously only carried `publicKey`/`privateKey`/`createdAt`
-              // through, which silently dropped both fields on every read —
-              // meaning a successful `bindDependantBunkerClient` would write
-              // `authorizedClientPubkey` to IDB but the next reload would
-              // return the endpoint with `authorizedClientPubkey: undefined`.
-              // That, in turn, made the publisher gate
-              // (`endpoint.authorizedClientPubkey`) always fail, masking
-              // every paired-child handshake.
-              //
-              // `pairingSecret` is ciphertext at rest (2026-07-02 audit —
-              // encrypted on write above, symmetric with appBunkerEndpoint's
-              // pairingSecret). Decrypt only if present; tolerate failure as
-              // "no pair window open" rather than throwing the whole
-              // dependant out. `authorizedClientPubkey` stays clear (public
-              // pubkey, no secret).
-              pairingSecret: record.bunkerEndpoint.pairingSecret
-                ? await decryptFully(record.bunkerEndpoint.pairingSecret).catch(() => undefined)
-                : undefined,
-              authorizedClientPubkey: record.bunkerEndpoint.authorizedClientPubkey,
-            }
-          : undefined;
-        // App-bunker endpoint. PrivateKey + pairingSecret are
-        // ciphertext at rest; pairings are clear (no secrets). Decrypt the
-        // pairing secret only if present — empty/undefined means no
-        // pair window is open.
-        let decAppEndpoint: TrustedAppEndpoint | undefined;
-        if (record.appBunkerEndpoint) {
-          const ae = record.appBunkerEndpoint as TrustedAppEndpoint;
-          let decSecret: string | undefined = undefined;
-          if (ae.pairingSecret) {
-            try { decSecret = await decryptFully(ae.pairingSecret); }
-            catch { /* tolerate — treat as no pair window */ }
-          }
-          decAppEndpoint = {
-            publicKey: ae.publicKey,
-            privateKey: ae.privateKey ? await decryptFully(ae.privateKey) : '',
-            createdAt: ae.createdAt,
-            pairingSecret: decSecret,
-            pairings: Array.isArray(ae.pairings) ? ae.pairings : [],
-          };
-        }
-        dependants.push({
-          ...record,
-          id: realId,
-          naturalPerson: { ...record.naturalPerson, privateKey: npPriv, avatarKey: npAvatarKey, contactAvatarKey: npContactAvatarKey, backdropKey: npBackdropKey },
-          persona: { ...record.persona, privateKey: personaPriv, avatarKey: personaAvatarKey, contactAvatarKey: personaContactAvatarKey, backdropKey: personaBackdropKey },
-          extraPersonas: decExtras,
-          bunkerEndpoint: decEndpoint,
-          appBunkerEndpoint: decAppEndpoint,
-          primaryKeypair: record.primaryKeypair || 'natural-person',
-          encrypted: false,
-        } as DependantIdentity);
+        dependants.push(await decryptDependantRow(record, realId, encryptionKey));
       } catch {
         // Decryption failed — SKIP this dependant entirely. Returning the
         // record with ciphertext in the privateKey fields would let
@@ -2348,9 +2477,23 @@ export async function loadDependantSignInFacts(dependantId: string): Promise<{ i
   };
 }
 
-export async function deleteDependant(pubkey: string): Promise<void> {
-  const db = await getDB();
-  await db.delete('identity', DEPENDANT_PREFIX + pubkey);
+/**
+ * Delete one dependant row, queued. With the unlock key, resolves with the
+ * record as it stood at the moment of deletion (read inside the same queued
+ * step, so a write that landed just before it is in it), or null when it could
+ * not be read or was not there. A caller that must act on what the row held
+ * (delete the blobs it pointed at) uses that instead of an earlier read.
+ */
+export function deleteDependant(pubkey: string, encryptionKey?: string): Promise<DependantIdentity | null> {
+  return runDependantWrite(async () => {
+    let removed: DependantIdentity | null = null;
+    if (encryptionKey) {
+      try { removed = await readDependantForWrite(pubkey, encryptionKey); } catch { removed = null; }
+    }
+    const db = await getDB();
+    await db.delete('identity', DEPENDANT_PREFIX + pubkey);
+    return removed;
+  });
 }
 
 // --- App-bunker endpoint (per-dependant trusted-app pairings) ---
@@ -2373,16 +2516,9 @@ export async function deleteDependant(pubkey: string): Promise<void> {
  */
 async function loadDependantOrThrow(dependantId: string, encryptionKey: string): Promise<DependantIdentity> {
   if (!encryptionKey) throw new Error('Encryption key required');
-  const db = await getDB();
-  const record = await db.get('identity', DEPENDANT_PREFIX + dependantId);
-  if (!record) throw new Error('Dependant not found');
-  // Re-derive the dependant via the canonical guardian-scoped reader so
-  // we share the multi-layer decryptFully path. Slightly heavier than a
-  // direct read but keeps decryption logic in one place.
-  if (!record.guardianPubkey) throw new Error('Dependant record missing guardianPubkey');
-  const all = await getDependants(record.guardianPubkey, encryptionKey);
-  const dep = all.find(d => d.id === dependantId);
-  if (!dep) throw new Error('Dependant not found after decrypt');
+  const dep = await readDependantForWrite(dependantId, encryptionKey);
+  if (!dep) throw new Error('Dependant not found');
+  if (!dep.guardianPubkey) throw new Error('Dependant record missing guardianPubkey');
   return dep;
 }
 
@@ -2393,58 +2529,64 @@ async function loadDependantOrThrow(dependantId: string, encryptionKey: string):
  * device. Cross-device sync of appBunkerEndpoint is OUT OF SCOPE for this
  * issue.
  */
-export async function ensureAppBunkerEndpoint(
+export function ensureAppBunkerEndpoint(
   dependantId: string,
   encryptionKey: string,
 ): Promise<TrustedAppEndpoint> {
-  const dep = await loadDependantOrThrow(dependantId, encryptionKey);
-  if (dep.appBunkerEndpoint?.privateKey && dep.appBunkerEndpoint?.publicKey) {
-    return dep.appBunkerEndpoint;
-  }
-  const sk = generateSecretKey();
-  const privHex = bytesToHex(sk);
-  const pubHex = getPublicKey(sk);
-  sk.fill(0);
-  const endpoint: TrustedAppEndpoint = {
-    publicKey: pubHex,
-    privateKey: privHex,
-    createdAt: Math.floor(Date.now() / 1000),
-    pairings: [],
-  };
-  const updated: DependantIdentity = { ...dep, appBunkerEndpoint: endpoint };
-  await saveDependant(updated, encryptionKey);
-  return endpoint;
+  return runDependantWrite(async () => {
+    const dep = await loadDependantOrThrow(dependantId, encryptionKey);
+    if (dep.appBunkerEndpoint?.privateKey && dep.appBunkerEndpoint?.publicKey) {
+      return dep.appBunkerEndpoint;
+    }
+    const sk = generateSecretKey();
+    const privHex = bytesToHex(sk);
+    const pubHex = getPublicKey(sk);
+    sk.fill(0);
+    const endpoint: TrustedAppEndpoint = {
+      publicKey: pubHex,
+      privateKey: privHex,
+      createdAt: Math.floor(Date.now() / 1000),
+      pairings: [],
+    };
+    const updated: DependantIdentity = { ...dep, appBunkerEndpoint: endpoint };
+    await writeDependantRecord(updated, encryptionKey);
+    return endpoint;
+  });
 }
 
 /** Mint and persist a fresh pairing secret. Used by PairDependantApp. */
-export async function setAppBunkerPairingSecret(
+export function setAppBunkerPairingSecret(
   dependantId: string,
   secret: string,
   encryptionKey: string,
 ): Promise<void> {
-  const dep = await loadDependantOrThrow(dependantId, encryptionKey);
-  if (!dep.appBunkerEndpoint) throw new Error('Dependant has no app-bunker endpoint');
-  if (dep.appBunkerEndpoint.pairingSecret === secret) return;
-  const updated: DependantIdentity = {
-    ...dep,
-    appBunkerEndpoint: { ...dep.appBunkerEndpoint, pairingSecret: secret },
-  };
-  await saveDependant(updated, encryptionKey);
+  return runDependantWrite(async () => {
+    const dep = await loadDependantOrThrow(dependantId, encryptionKey);
+    if (!dep.appBunkerEndpoint) throw new Error('Dependant has no app-bunker endpoint');
+    if (dep.appBunkerEndpoint.pairingSecret === secret) return;
+    const updated: DependantIdentity = {
+      ...dep,
+      appBunkerEndpoint: { ...dep.appBunkerEndpoint, pairingSecret: secret },
+    };
+    await writeDependantRecord(updated, encryptionKey);
+  });
 }
 
 /** Clear the in-flight secret (after a successful connect). */
-export async function clearAppBunkerPairingSecret(
+export function clearAppBunkerPairingSecret(
   dependantId: string,
   encryptionKey: string,
 ): Promise<void> {
-  const dep = await loadDependantOrThrow(dependantId, encryptionKey);
-  if (!dep.appBunkerEndpoint) return;
-  if (!dep.appBunkerEndpoint.pairingSecret) return;
-  const updated: DependantIdentity = {
-    ...dep,
-    appBunkerEndpoint: { ...dep.appBunkerEndpoint, pairingSecret: undefined },
-  };
-  await saveDependant(updated, encryptionKey);
+  return runDependantWrite(async () => {
+    const dep = await loadDependantOrThrow(dependantId, encryptionKey);
+    if (!dep.appBunkerEndpoint) return;
+    if (!dep.appBunkerEndpoint.pairingSecret) return;
+    const updated: DependantIdentity = {
+      ...dep,
+      appBunkerEndpoint: { ...dep.appBunkerEndpoint, pairingSecret: undefined },
+    };
+    await writeDependantRecord(updated, encryptionKey);
+  });
 }
 
 /**
@@ -2486,19 +2628,21 @@ function nextPairingsForBind(
  * check and consume an extra slot. This standalone variant remains for
  * tests + the rare path that doesn't own a paired secret.
  */
-export async function addAppBunkerPairing(
+export function addAppBunkerPairing(
   dependantId: string,
   pairing: TrustedAppPairing,
   encryptionKey: string,
 ): Promise<void> {
-  const dep = await loadDependantOrThrow(dependantId, encryptionKey);
-  if (!dep.appBunkerEndpoint) throw new Error('Dependant has no app-bunker endpoint');
-  const nextPairings = nextPairingsForBind(dep.appBunkerEndpoint.pairings, pairing);
-  const updated: DependantIdentity = {
-    ...dep,
-    appBunkerEndpoint: { ...dep.appBunkerEndpoint, pairings: nextPairings },
-  };
-  await saveDependant(updated, encryptionKey);
+  return runDependantWrite(async () => {
+    const dep = await loadDependantOrThrow(dependantId, encryptionKey);
+    if (!dep.appBunkerEndpoint) throw new Error('Dependant has no app-bunker endpoint');
+    const nextPairings = nextPairingsForBind(dep.appBunkerEndpoint.pairings, pairing);
+    const updated: DependantIdentity = {
+      ...dep,
+      appBunkerEndpoint: { ...dep.appBunkerEndpoint, pairings: nextPairings },
+    };
+    await writeDependantRecord(updated, encryptionKey);
+  });
 }
 
 /**
@@ -2514,41 +2658,45 @@ export async function addAppBunkerPairing(
  * Throws `Error('pairing slot limit reached')` on cap; the dispatcher
  * surfaces this back to the consumer as the NIP-46 error.
  */
-export async function addAppBunkerPairingAndClearSecret(
+export function addAppBunkerPairingAndClearSecret(
   dependantId: string,
   pairing: TrustedAppPairing,
   encryptionKey: string,
 ): Promise<void> {
-  const dep = await loadDependantOrThrow(dependantId, encryptionKey);
-  if (!dep.appBunkerEndpoint) throw new Error('Dependant has no app-bunker endpoint');
-  const nextPairings = nextPairingsForBind(dep.appBunkerEndpoint.pairings, pairing);
-  const updated: DependantIdentity = {
-    ...dep,
-    appBunkerEndpoint: {
-      ...dep.appBunkerEndpoint,
-      pairings: nextPairings,
-      pairingSecret: undefined,
-    },
-  };
-  await saveDependant(updated, encryptionKey);
+  return runDependantWrite(async () => {
+    const dep = await loadDependantOrThrow(dependantId, encryptionKey);
+    if (!dep.appBunkerEndpoint) throw new Error('Dependant has no app-bunker endpoint');
+    const nextPairings = nextPairingsForBind(dep.appBunkerEndpoint.pairings, pairing);
+    const updated: DependantIdentity = {
+      ...dep,
+      appBunkerEndpoint: {
+        ...dep.appBunkerEndpoint,
+        pairings: nextPairings,
+        pairingSecret: undefined,
+      },
+    };
+    await writeDependantRecord(updated, encryptionKey);
+  });
 }
 
 /** Remove a pairing by clientPubkey. No-op if not present. */
-export async function removeAppBunkerPairing(
+export function removeAppBunkerPairing(
   dependantId: string,
   clientPubkey: string,
   encryptionKey: string,
 ): Promise<void> {
-  const dep = await loadDependantOrThrow(dependantId, encryptionKey);
-  if (!dep.appBunkerEndpoint) return;
-  const lcClient = clientPubkey.toLowerCase();
-  const next = dep.appBunkerEndpoint.pairings.filter(p => p.clientPubkey.toLowerCase() !== lcClient);
-  if (next.length === dep.appBunkerEndpoint.pairings.length) return;
-  const updated: DependantIdentity = {
-    ...dep,
-    appBunkerEndpoint: { ...dep.appBunkerEndpoint, pairings: next },
-  };
-  await saveDependant(updated, encryptionKey);
+  return runDependantWrite(async () => {
+    const dep = await loadDependantOrThrow(dependantId, encryptionKey);
+    if (!dep.appBunkerEndpoint) return;
+    const lcClient = clientPubkey.toLowerCase();
+    const next = dep.appBunkerEndpoint.pairings.filter(p => p.clientPubkey.toLowerCase() !== lcClient);
+    if (next.length === dep.appBunkerEndpoint.pairings.length) return;
+    const updated: DependantIdentity = {
+      ...dep,
+      appBunkerEndpoint: { ...dep.appBunkerEndpoint, pairings: next },
+    };
+    await writeDependantRecord(updated, encryptionKey);
+  });
 }
 
 /** Read-only view of pairings for a dependant. */
@@ -2561,25 +2709,27 @@ export async function listAppBunkerPairings(
 }
 
 /** Bump lastSeenAt for an existing pairing. No-op if missing. */
-export async function touchAppBunkerPairing(
+export function touchAppBunkerPairing(
   dependantId: string,
   clientPubkey: string,
   encryptionKey: string,
 ): Promise<void> {
-  const dep = await loadDependantOrThrow(dependantId, encryptionKey);
-  if (!dep.appBunkerEndpoint) return;
-  const lcClient = clientPubkey.toLowerCase();
-  const existing = dep.appBunkerEndpoint.pairings.find(p => p.clientPubkey.toLowerCase() === lcClient);
-  if (!existing) return;
-  const now = Math.floor(Date.now() / 1000);
-  const next = dep.appBunkerEndpoint.pairings.map(p =>
-    p.clientPubkey.toLowerCase() === lcClient ? { ...p, lastSeenAt: now } : p,
-  );
-  const updated: DependantIdentity = {
-    ...dep,
-    appBunkerEndpoint: { ...dep.appBunkerEndpoint, pairings: next },
-  };
-  await saveDependant(updated, encryptionKey);
+  return runDependantWrite(async () => {
+    const dep = await loadDependantOrThrow(dependantId, encryptionKey);
+    if (!dep.appBunkerEndpoint) return;
+    const lcClient = clientPubkey.toLowerCase();
+    const existing = dep.appBunkerEndpoint.pairings.find(p => p.clientPubkey.toLowerCase() === lcClient);
+    if (!existing) return;
+    const now = Math.floor(Date.now() / 1000);
+    const next = dep.appBunkerEndpoint.pairings.map(p =>
+      p.clientPubkey.toLowerCase() === lcClient ? { ...p, lastSeenAt: now } : p,
+    );
+    const updated: DependantIdentity = {
+      ...dep,
+      appBunkerEndpoint: { ...dep.appBunkerEndpoint, pairings: next },
+    };
+    await writeDependantRecord(updated, encryptionKey);
+  });
 }
 
 // --- Bunker Client Secret (encrypted) ---

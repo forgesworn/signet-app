@@ -40,6 +40,11 @@ export function useIdentity(encryptionKey?: string | null) {
   // This prevents the onboarding screen from flashing while IndexedDB is being read.
   const [loading, setLoading] = useState(true);
   const hasLoadedOnce = useRef(false);
+  // The key as of the latest render: a setter awaiting slow work (an upload)
+  // holds the key of the render that created it, and must not save decrypted
+  // records or reload them into state after a lock cleared them.
+  const liveKeyRef = useRef(encryptionKey);
+  useEffect(() => { liveKeyRef.current = encryptionKey; }, [encryptionKey]);
 
   const loadAll = useCallback(async () => {
     const raw = await db.getAllIdentities();
@@ -750,11 +755,17 @@ export function useIdentity(encryptionKey?: string | null) {
   const setPersonaAvatar = useCallback(async (
     target: 'natural-person' | 'persona' | string,
     avatar: { hash: string; blossomUrl: string; keyHex: string; updatedAt: number },
-  ) => {
-    if (!activeIdentity) return;
+  ): Promise<{ previous?: { hash: string; server: string } }> => {
+    if (!activeIdentity) throw new Error('No identity');
     if (!encryptionKey) throw new Error('Cannot save identity without encryption key');
     const decrypted = await db.loadIdentityDecrypted(activeIdentity.id, encryptionKey);
     if (!decrypted) throw new Error('Could not decrypt identity — wrong key?');
+    // Read from the record being replaced, so the caller deletes the right blob.
+    const slot = target === 'natural-person' ? decrypted.naturalPerson
+      : target === 'persona' ? decrypted.persona
+      : decrypted.extraPersonas?.find(p => p.publicKey === target);
+    if (!slot) throw new Error('Persona not found');
+    const previous = slot.avatarHash && slot.avatarBlossomUrl ? { hash: slot.avatarHash, server: slot.avatarBlossomUrl } : undefined;
 
     let updated: SignetIdentity;
     if (target === 'natural-person') {
@@ -794,8 +805,11 @@ export function useIdentity(encryptionKey?: string | null) {
       updated = { ...decrypted, extraPersonas: extras };
     }
 
+    // Locked (or re-keyed) during the decrypt: save nothing, reload nothing.
+    if (liveKeyRef.current !== encryptionKey) throw new Error('Cannot save identity without encryption key');
     await db.saveIdentityEncrypted(updated, encryptionKey);
-    await loadAll();
+    if (liveKeyRef.current === encryptionKey) await loadAll();
+    return { previous };
   }, [activeIdentity, loadAll, encryptionKey]);
 
   /**
@@ -806,11 +820,15 @@ export function useIdentity(encryptionKey?: string | null) {
    */
   const clearPersonaAvatar = useCallback(async (
     target: 'natural-person' | 'persona' | string,
-  ) => {
-    if (!activeIdentity) return;
+  ): Promise<{ previous?: { hash: string; server: string } }> => {
+    if (!activeIdentity) return {};
     if (!encryptionKey) throw new Error('Cannot save identity without encryption key');
     const decrypted = await db.loadIdentityDecrypted(activeIdentity.id, encryptionKey);
     if (!decrypted) throw new Error('Could not decrypt identity — wrong key?');
+    const slot = target === 'natural-person' ? decrypted.naturalPerson
+      : target === 'persona' ? decrypted.persona
+      : decrypted.extraPersonas?.find(p => p.publicKey === target);
+    const previous = slot?.avatarHash && slot.avatarBlossomUrl ? { hash: slot.avatarHash, server: slot.avatarBlossomUrl } : undefined;
 
     const cleared = {
       avatarHash: undefined,
@@ -829,8 +847,10 @@ export function useIdentity(encryptionKey?: string | null) {
       );
       updated = { ...decrypted, extraPersonas: extras };
     }
+    if (liveKeyRef.current !== encryptionKey) throw new Error('Cannot save identity without encryption key');
     await db.saveIdentityEncrypted(updated, encryptionKey);
-    await loadAll();
+    if (liveKeyRef.current === encryptionKey) await loadAll();
+    return { previous };
   }, [activeIdentity, loadAll, encryptionKey]);
 
   /**

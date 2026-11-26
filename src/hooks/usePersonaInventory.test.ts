@@ -265,6 +265,78 @@ describe('mergeInventory clears stale NIP-05 check result on nip05 change (revie
     expect(savedIdentity.naturalPerson.nip05CheckedAt).toBe(1_700_000_000_000);
   });
 
+  it('a guardian rename of the real identity reaches the child (Kid NP Renamed)', async () => {
+    mockLoadId.mockResolvedValue({
+      id: DEP_PUB, mnemonic: '',
+      naturalPerson: { publicKey: NP_PUB, privateKey: '', displayName: 'Kid NP' },
+      naturalPersonActive: true,
+      persona: { publicKey: '', privateKey: '', displayName: '' },
+      extraPersonas: [], primaryKeypair: 'natural-person',
+    } as unknown as SignetIdentity);
+    await mergeInventory({
+      v: 1, revision: 1,
+      naturalPerson: { publicKey: NP_PUB, displayName: 'Kid NP Renamed' },
+      extraPersonas: [],
+    } as PersonaInventoryPayload, DEP_PUB, 'test-key');
+    const saved = mockSaveId.mock.calls[0][0] as SignetIdentity;
+    expect(saved.naturalPerson.displayName).toBe('Kid NP Renamed');
+    expect(saved.naturalPersonActive).toBe(true);
+  });
+
+  it('applies the wire name sanitised, and an empty wire name never blanks a stored one', async () => {
+    const stored = {
+      id: DEP_PUB, mnemonic: '',
+      naturalPerson: { publicKey: NP_PUB, privateKey: '', displayName: 'Kid NP' },
+      naturalPersonActive: true,
+      persona: { publicKey: '', privateKey: '', displayName: '' },
+      extraPersonas: [], primaryKeypair: 'natural-person',
+    } as unknown as SignetIdentity;
+    mockLoadId.mockResolvedValue(stored);
+    await mergeInventory({
+      v: 1, revision: 1, naturalPerson: { publicKey: NP_PUB, displayName: '\u202eKid\u0000 NP 2 ' }, extraPersonas: [],
+    } as PersonaInventoryPayload, DEP_PUB, 'test-key');
+    expect((mockSaveId.mock.calls[0][0] as SignetIdentity).naturalPerson.displayName).toBe('Kid NP 2');
+
+    mockSaveId.mockClear();
+    await mergeInventory({
+      v: 1, revision: 2, naturalPerson: { publicKey: NP_PUB, displayName: '' }, extraPersonas: [],
+    } as PersonaInventoryPayload, DEP_PUB, 'test-key');
+    expect((mockSaveId.mock.calls[0][0] as SignetIdentity).naturalPerson.displayName).toBe('Kid NP');
+  });
+
+  it('a dormant real identity stays nameless: no wire entry means no name, even for a stored one', async () => {
+    mockLoadId.mockResolvedValue({
+      id: DEP_PUB, mnemonic: '',
+      naturalPerson: { publicKey: NP_PUB, privateKey: '', displayName: 'Kid NP' },
+      naturalPersonActive: true,
+      persona: { publicKey: 'c'.repeat(64), privateKey: '', displayName: 'Ally' },
+      extraPersonas: [], primaryKeypair: 'persona',
+    } as unknown as SignetIdentity);
+    await mergeInventory({
+      v: 1, revision: 1, persona: { publicKey: 'c'.repeat(64), displayName: 'Ally' }, extraPersonas: [],
+    } as PersonaInventoryPayload, DEP_PUB, 'test-key');
+    const saved = mockSaveId.mock.calls[0][0] as SignetIdentity;
+    expect(saved.naturalPerson).toEqual({ publicKey: '', privateKey: '', displayName: '' });
+    expect(saved.naturalPersonActive).toBe(false);
+  });
+
+  it('a dormant stored slot takes the wire name together with its activation', async () => {
+    mockLoadId.mockResolvedValue({
+      id: DEP_PUB, mnemonic: '',
+      naturalPerson: { publicKey: '', privateKey: '', displayName: '' },
+      naturalPersonActive: false,
+      persona: { publicKey: 'c'.repeat(64), privateKey: '', displayName: 'Ally' },
+      extraPersonas: [], primaryKeypair: 'persona',
+    } as unknown as SignetIdentity);
+    await mergeInventory({
+      v: 1, revision: 1, naturalPerson: { publicKey: NP_PUB, displayName: 'Lily Rivera' },
+      persona: { publicKey: 'c'.repeat(64), displayName: 'Ally' }, extraPersonas: [],
+    } as PersonaInventoryPayload, DEP_PUB, 'test-key');
+    const saved = mockSaveId.mock.calls[0][0] as SignetIdentity;
+    expect(saved.naturalPerson.displayName).toBe('Lily Rivera');
+    expect(saved.naturalPersonActive).toBe(true);
+  });
+
   it("preserves a stored publicProfileBase (device-local kind-0 base) when the wire carries new config", async () => {
     const base = { eventId: 'e'.repeat(64), createdAt: 1, content: '{"bot":true}', tags: [] };
     const stored = {
@@ -403,9 +475,9 @@ describe('mergeInventory omits a dormant real identity (spec §7.6)', () => {
     await mergeInventory(payload, DEP_PUB, 'test-key');
 
     const savedIdentity = mockSaveId.mock.calls[0][0] as SignetIdentity;
-    // publicKey/privateKey/displayName untouched — still the stored stub.
+    // The key and the name come from the wire entry: it exists only while the real identity is active, and the merge activates the slot with it.
     expect(savedIdentity.naturalPerson.publicKey).toBe(NP_PUB);
-    expect(savedIdentity.naturalPerson.displayName).toBe('');
+    expect(savedIdentity.naturalPerson.displayName).toBe('Lily Rivera');
     // Avatar + publicProfile config DO flow through from the wire.
     expect(savedIdentity.naturalPerson.avatarHash).toBe('c'.repeat(64));
     expect(savedIdentity.naturalPerson.publicProfile?.enabled).toBe(true);
