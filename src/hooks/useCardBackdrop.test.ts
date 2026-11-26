@@ -206,7 +206,7 @@ describe('a guardian\'s dependant card sends the backdrop on', () => {
       createElement(DependantBackdropContext.Provider, { value: (pk: string) => (pk === PK ? link : null) }, children);
   }
   const mkLink = (over: Partial<DependantBackdropLink> = {}): DependantBackdropLink => ({
-    name: 'Lily', canSend: true, unlocked: true, sent: false, send: vi.fn(async () => ({ ok: true as const })), remove: vi.fn(async () => undefined), ...over,
+    name: 'Lily', canSend: true, unlocked: true, sent: false, slotKey: 'dep:persona', send: vi.fn(async () => ({ ok: true as const })), remove: vi.fn(async () => undefined), ...over,
   });
 
   it('saves locally first, then sends the stored blob and reports how it went', async () => {

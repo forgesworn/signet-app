@@ -131,6 +131,7 @@ import { useDependantStatusPublisher } from './hooks/useDependantStatusPublisher
 import { useDependantStatus } from './hooks/useDependantStatus';
 import { usePersonaInventoryPublisher } from './hooks/usePersonaInventoryPublisher';
 import { usePersonaInventory } from './hooks/usePersonaInventory';
+import { useBackdropBackfill } from './hooks/useBackdropBackfill';
 import { useBunkerServer, type BunkerRoute, type BunkerServeStatus } from './hooks/useBunkerServer';
 import { useEscalations } from './hooks/useEscalations';
 import {
@@ -964,6 +965,17 @@ function AppContent() {
     deleteBlob: (domain, hash, server) => deleteOwnBlob(domain, hash, server),
   // `deleteOwnBlob` reads the live key from a ref, so it is not a dependency.
   }), [isPairedChild, dependants, preferences.defaultBlossomUrl, blossomConsent, setDependantPersonaBackdrop]);
+  // Backdrops picked while no phone was paired (or before a re-pair) go out on their
+  // own once the dependants are loaded: the slots whose card would read "Send to ...".
+  const backdropSlotPubkeys = useMemo(() => dependants.flatMap(d => [
+    d.persona.publicKey, d.naturalPerson.publicKey, ...(d.extraPersonas ?? []).map(p => p.publicKey),
+  ]), [dependants]);
+  useBackdropBackfill({
+    enabled: !isPairedChild && blossomConsent && dependantsLoadedWithKey && !!encryptionKey,
+    encryptionKey,
+    slotPubkeys: backdropSlotPubkeys,
+    lookup: dependantBackdropLookup,
+  });
   // Home-ring backup nudge (spec §10) — replaces the retired no-lock nag in
   // the same slot. `identity` and `encryptionKey` gate it to the unlocked,
   // loaded state; the rule itself lives in `shouldShowBackupNudge`. Holding a
