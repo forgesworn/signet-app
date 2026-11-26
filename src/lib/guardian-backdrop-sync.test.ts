@@ -1,5 +1,5 @@
 import { describe, it, expect, vi } from 'vitest';
-import { syncGuardianBackdrops, slotsOf, type GuardianBackdropDeps } from './guardian-backdrop-sync';
+import { syncGuardianBackdrops, dropGuardianBackdrops, slotsOf, type GuardianBackdropDeps } from './guardian-backdrop-sync';
 
 const PERSONA = 'a'.repeat(64), NP = 'b'.repeat(64), EXTRA = 'c'.repeat(64), GONE = 'd'.repeat(64);
 const H = (n: string) => n.repeat(64);
@@ -198,5 +198,40 @@ describe('slotsOf', () => {
 
   it('skips a slot with no key yet (a dormant real identity)', () => {
     expect(slotsOf({ id: GONE, naturalPerson: { publicKey: '' }, persona: { publicKey: PERSONA }, extraPersonas: [] }).map(s => s.pubkey)).toEqual([PERSONA]);
+  });
+});
+
+describe('an unpair that lands while a sync pass is running', () => {
+  it('a pass still fetching when the drop runs writes no row afterwards', async () => {
+    let release!: () => void;
+    const gate = new Promise<void>(r => { release = r; });
+    const { deps, guardian } = makeDeps({}, { fetchBackdrop: vi.fn(async () => { await gate; return BLOB; }) });
+    const running = syncGuardianBackdrops(identity(), deps);
+    await vi.waitFor(() => expect(deps.fetchBackdrop).toHaveBeenCalled());
+    await dropGuardianBackdrops(deps);
+    release();
+    await running;
+    expect(deps.setGuardianBackdrop).not.toHaveBeenCalled();
+    expect(guardian.size).toBe(0);
+  });
+
+  it('a row already being written when the drop runs is deleted by it', async () => {
+    let release!: () => void;
+    const gate = new Promise<void>(r => { release = r; });
+    const store = makeDeps();
+    const deps = { ...store.deps, setGuardianBackdrop: vi.fn(async (pk: string, _b: Blob, hash: string) => { await gate; store.guardian.set(pk, hash); }) };
+    const running = syncGuardianBackdrops(identity(), deps);
+    await vi.waitFor(() => expect(deps.setGuardianBackdrop).toHaveBeenCalled());
+    const dropping = dropGuardianBackdrops(deps);
+    release();
+    await Promise.all([running, dropping]);
+    expect(store.guardian.size).toBe(0);
+  });
+
+  it('a pass started after the drop (a re-pair) writes as normal', async () => {
+    const { deps, guardian } = makeDeps();
+    await dropGuardianBackdrops(deps);
+    await syncGuardianBackdrops(identity(), deps);
+    expect(guardian.get(PERSONA)).toBe(H('1'));
   });
 });
